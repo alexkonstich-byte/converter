@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import warnings
@@ -74,7 +76,12 @@ class ConverterApp:
 
         self.selected_item: FileItem | None = None
         self.preview_audio: ft.Audio | None = None
+        self.preview_video = None
         self.is_playing: bool = False
+        self._has_started: bool = False
+        self._duration_ms: int = 0
+        self._seeking: bool = False
+        self.last_output_folder: Path | None = None
         self.thumb_dir = Path(tempfile.gettempdir()) / "converter_app_thumbs"
         self.thumb_dir.mkdir(parents=True, exist_ok=True)
 
@@ -204,6 +211,16 @@ class ConverterApp:
             ),
         )
 
+        # "Open output folder" — visible only after at least one successful
+        # conversion, jumps straight to where files were saved.
+        self.open_output_btn = ft.OutlinedButton(
+            "Открыть папку",
+            icon=ft.Icons.FOLDER_OPEN_OUTLINED,
+            visible=False,
+            on_click=self._open_last_output_folder,
+            style=ft.ButtonStyle(shape=ft.RoundedRectangleBorder(radius=24)),
+        )
+
         action_bar = ft.Container(
             padding=ft.padding.symmetric(horizontal=20, vertical=14),
             border_radius=20,
@@ -215,9 +232,11 @@ class ConverterApp:
                         spacing=4,
                         controls=[self.status_text, self.progress],
                     ),
+                    self.open_output_btn,
                     self.convert_btn,
                 ],
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
             ),
         )
 
@@ -435,34 +454,58 @@ class ConverterApp:
             visible=False,
         )
 
-        # Audio playback widgets (audio control itself is invisible).
+        # Video playback slot — ft.Video instances are mounted into this
+        # container per file; show_controls=True draws play/pause + a seek
+        # bar natively.
+        self.preview_video_slot = ft.Container(
+            visible=False,
+            height=260,
+            border_radius=12,
+            content=None,
+        )
+
+        # Audio playback widgets — ft.Audio is invisible; we drive a
+        # seek slider + play button manually.
         self.preview_play_btn = ft.IconButton(
             icon=ft.Icons.PLAY_ARROW_ROUNDED,
-            icon_size=28,
+            icon_size=32,
             tooltip="Воспроизвести",
             on_click=self._toggle_playback,
         )
         self.preview_position_text = ft.Text("0:00 / 0:00", size=12,
                                              color=ft.Colors.ON_SURFACE_VARIANT)
+        self.preview_seek = ft.Slider(
+            min=0, max=1.0, value=0.0,
+            on_change_start=self._on_seek_start,
+            on_change=self._on_seek_change,
+            on_change_end=self._on_seek_end,
+            expand=True,
+        )
         self.preview_audio_panel = ft.Container(
             visible=False,
             padding=ft.padding.symmetric(horizontal=12, vertical=10),
             border_radius=12,
             bgcolor=ft.Colors.SURFACE,
-            content=ft.Row(
+            content=ft.Column(
+                spacing=4,
                 controls=[
-                    ft.Container(
-                        width=44, height=44, border_radius=12,
-                        bgcolor=ft.Colors.SECONDARY_CONTAINER,
-                        alignment=ft.alignment.center,
-                        content=ft.Icon(ft.Icons.MUSIC_NOTE_OUTLINED,
-                                        color=ft.Colors.ON_SECONDARY_CONTAINER),
+                    ft.Row(
+                        controls=[
+                            ft.Container(
+                                width=44, height=44, border_radius=12,
+                                bgcolor=ft.Colors.SECONDARY_CONTAINER,
+                                alignment=ft.alignment.center,
+                                content=ft.Icon(ft.Icons.MUSIC_NOTE_OUTLINED,
+                                                color=ft.Colors.ON_SECONDARY_CONTAINER),
+                            ),
+                            self.preview_play_btn,
+                            ft.Container(expand=True, content=self.preview_seek),
+                            self.preview_position_text,
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=10,
                     ),
-                    self.preview_play_btn,
-                    self.preview_position_text,
                 ],
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=10,
             ),
         )
 
@@ -504,6 +547,7 @@ class ConverterApp:
                             controls=[
                                 self.preview_placeholder,
                                 self.preview_image,
+                                self.preview_video_slot,
                             ],
                         ),
                     ),
@@ -696,7 +740,28 @@ class ConverterApp:
         if item.status == "running":
             trailing = ft.ProgressRing(width=20, height=20, stroke_width=2)
         elif item.status == "ok":
-            trailing = ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.TERTIARY)
+            # On success, item.message holds the destination path. Offer
+            # buttons to reveal the file in the OS file manager and to
+            # open it in the system default app.
+            dst_str = item.message
+            trailing = ft.Row(
+                spacing=2, tight=True,
+                controls=[
+                    ft.IconButton(
+                        icon=ft.Icons.FOLDER_OPEN_OUTLINED,
+                        icon_size=20,
+                        tooltip="Открыть папку с файлом",
+                        on_click=lambda _e, p=dst_str: self._open_in_explorer(Path(p)),
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
+                        icon_size=20,
+                        tooltip="Открыть файл",
+                        on_click=lambda _e, p=dst_str: self._open_file(Path(p)),
+                    ),
+                    ft.Icon(ft.Icons.CHECK_CIRCLE, color=ft.Colors.TERTIARY),
+                ],
+            )
         elif item.status == "error":
             trailing = ft.Icon(ft.Icons.ERROR, color=ft.Colors.ERROR, tooltip=item.message)
         else:
@@ -755,6 +820,23 @@ class ConverterApp:
         self._refresh_files()
 
     def _clear_preview(self) -> None:
+        self._detach_audio()
+        self._detach_video()
+        self.is_playing = False
+        self._has_started = False
+        self._seeking = False
+        self.preview_play_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED
+        self.selected_item = None
+        self.preview_image.src = ""
+        self.preview_image.visible = False
+        self.preview_audio_panel.visible = False
+        self.preview_placeholder.visible = True
+        self.preview_subtitle.value = ""
+        self.preview_subtitle.visible = False
+        self.preview_seek.value = 0
+        self.preview_position_text.value = "0:00 / 0:00"
+
+    def _detach_audio(self) -> None:
         if self.preview_audio:
             try:
                 self.preview_audio.pause()
@@ -765,15 +847,16 @@ class ConverterApp:
             except (ValueError, Exception):
                 pass
             self.preview_audio = None
-        self.is_playing = False
-        self.preview_play_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED
-        self.selected_item = None
-        self.preview_image.src = ""
-        self.preview_image.visible = False
-        self.preview_audio_panel.visible = False
-        self.preview_placeholder.visible = True
-        self.preview_subtitle.value = ""
-        self.preview_subtitle.visible = False
+
+    def _detach_video(self) -> None:
+        if getattr(self, "preview_video", None):
+            try:
+                self.preview_video.pause()
+            except Exception:
+                pass
+        self.preview_video = None
+        self.preview_video_slot.content = None
+        self.preview_video_slot.visible = False
 
     def _render_preview(self, item: FileItem) -> None:
         try:
@@ -785,16 +868,15 @@ class ConverterApp:
         )
         self.preview_subtitle.visible = True
 
-        # Detach any prior audio.
-        if self.preview_audio:
-            try:
-                self.preview_audio.pause()
-                self.page.overlay.remove(self.preview_audio)
-            except Exception:
-                pass
-            self.preview_audio = None
+        self._detach_audio()
+        self._detach_video()
         self.is_playing = False
+        self._has_started = False
+        self._seeking = False
+        self._duration_ms = 0
         self.preview_play_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED
+        self.preview_seek.value = 0
+        self.preview_position_text.value = "0:00 / 0:00"
 
         if item.kind == "image":
             self.preview_image.src = str(item.path)
@@ -805,37 +887,90 @@ class ConverterApp:
             self.preview_image.visible = False
             self.preview_placeholder.visible = False
             self.preview_audio_panel.visible = True
-            self.preview_position_text.value = "0:00 / 0:00"
             self._attach_audio(item.path)
         elif item.kind == "video":
-            # Show a thumbnail (extracted via ffmpeg) and let the play button
-            # play the video's audio track as a quick listen.
-            self.preview_audio_panel.visible = True
-            self.preview_position_text.value = "0:00 / 0:00"
-            self.preview_placeholder.visible = False
-            self.preview_image.src = ""
+            self.preview_audio_panel.visible = False
             self.preview_image.visible = False
-            self._attach_audio(item.path)
-            threading.Thread(
-                target=self._generate_and_show_thumbnail, args=(item,), daemon=True,
-            ).start()
+            self.preview_placeholder.visible = False
+            self._mount_video(item.path)
         else:
             self._clear_preview()
 
         self.page.update()
 
     def _attach_audio(self, src: Path) -> None:
+        # ft.Audio's underlying audioplayers backend is finicky with raw
+        # Windows paths — feed it a proper file:// URI instead.
+        try:
+            uri = Path(src).resolve().as_uri()
+        except ValueError:
+            uri = str(src)
         audio = ft.Audio(
-            src=str(src),
+            src=uri,
             autoplay=False,
+            volume=1.0,
+            on_loaded=self._on_audio_loaded,
             on_duration_changed=self._on_audio_duration,
             on_position_changed=self._on_audio_position,
             on_state_changed=self._on_audio_state,
         )
         self.page.overlay.append(audio)
         self.preview_audio = audio
-        self._duration_ms = 0
         self.page.update()
+
+    def _mount_video(self, src: Path) -> None:
+        try:
+            resource = Path(src).resolve().as_uri()
+        except ValueError:
+            resource = str(src)
+        try:
+            video = ft.Video(
+                playlist=[ft.VideoMedia(resource=resource)],
+                autoplay=False,
+                show_controls=True,  # native play/pause + seek bar
+                muted=False,
+                aspect_ratio=16 / 9,
+                fit=ft.ImageFit.CONTAIN,
+                on_error=self._on_video_error,
+            )
+        except Exception:
+            self._show_video_fallback(src)
+            return
+        self.preview_video = video
+        self.preview_video_slot.content = video
+        self.preview_video_slot.visible = True
+
+    def _on_video_error(self, _e) -> None:
+        item = self.selected_item
+        if item:
+            self._show_video_fallback(item.path)
+
+    def _show_video_fallback(self, src: Path) -> None:
+        # mpv backend missing or unreadable file — fall back to a thumbnail
+        # plus an "open in default player" hint.
+        self._detach_video()
+        self.preview_image.visible = True
+        threading.Thread(
+            target=self._generate_and_show_thumbnail,
+            args=(self.selected_item,) if self.selected_item else (FileItem(Path(src)),),
+            daemon=True,
+        ).start()
+        self._toast(
+            "Предпросмотр видео недоступен. Откройте файл во встроенном проигрывателе системы.",
+            error=True,
+        )
+
+    def _on_audio_loaded(self, _e) -> None:
+        # Once metadata is ready, asking for duration reliably returns it.
+        if not self.preview_audio:
+            return
+        try:
+            d = self.preview_audio.get_duration()
+            if d:
+                self._duration_ms = int(d)
+                self._update_position_label(0)
+        except Exception:
+            pass
 
     def _on_audio_duration(self, e) -> None:
         try:
@@ -850,13 +985,22 @@ class ConverterApp:
         except (AttributeError, ValueError, TypeError):
             pos = 0
         self._update_position_label(pos)
+        # Sync seek slider unless the user is actively dragging it.
+        if self._duration_ms > 0 and not self._seeking:
+            self.preview_seek.value = max(0.0, min(1.0, pos / self._duration_ms))
+            try:
+                self.preview_seek.update()
+            except Exception:
+                pass
 
     def _on_audio_state(self, e) -> None:
         # When playback completes, reset the play icon.
         state = getattr(e, "data", "") or ""
         if state.lower() in ("completed", "stopped"):
             self.is_playing = False
+            self._has_started = False
             self.preview_play_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED
+            self.preview_seek.value = 0
             self.page.update()
 
     def _update_position_label(self, pos_ms: int) -> None:
@@ -865,7 +1009,7 @@ class ConverterApp:
             return f"{s // 60}:{s % 60:02d}"
         self.preview_position_text.value = f"{fmt(pos_ms)} / {fmt(self._duration_ms)}"
         try:
-            self.page.update()
+            self.preview_position_text.update()
         except Exception:
             pass
 
@@ -878,14 +1022,44 @@ class ConverterApp:
                 self.is_playing = False
                 self.preview_play_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED
             else:
-                # Audio.play() restarts; resume() continues. Use play on first
-                # press, resume afterwards.
-                self.preview_audio.play()
+                # play() starts from beginning; resume() continues from
+                # the last position (or last seek). Use resume after the
+                # first start to preserve seek behaviour.
+                if self._has_started:
+                    self.preview_audio.resume()
+                else:
+                    self.preview_audio.play()
+                    self._has_started = True
                 self.is_playing = True
                 self.preview_play_btn.icon = ft.Icons.PAUSE_ROUNDED
         except Exception as exc:
             self._toast(f"Не удалось воспроизвести: {exc}", error=True)
         self.page.update()
+
+    # Seek-slider handlers ------------------------------------------------
+    def _on_seek_start(self, _e) -> None:
+        self._seeking = True
+
+    def _on_seek_change(self, _e) -> None:
+        # Update the label live while dragging, but don't seek yet.
+        if self._duration_ms <= 0:
+            return
+        target_ms = int(self.preview_seek.value * self._duration_ms)
+        self._update_position_label(target_ms)
+
+    def _on_seek_end(self, _e) -> None:
+        self._seeking = False
+        if not self.preview_audio or self._duration_ms <= 0:
+            return
+        target_ms = int(self.preview_seek.value * self._duration_ms)
+        try:
+            self.preview_audio.seek(target_ms)
+            # If playback wasn't started yet, seek implicitly starts it on
+            # some backends — track the started flag so resume() works next.
+            if not self._has_started and self.is_playing:
+                self._has_started = True
+        except Exception:
+            pass
 
     def _thumbnail_path(self, src: Path) -> Path:
         try:
@@ -937,6 +1111,50 @@ class ConverterApp:
             )
         )
 
+    # ----- OS integration -----------------------------------------------
+    def _open_in_explorer(self, path: Path) -> None:
+        """Open the OS file manager focused on the given file (or its folder)."""
+        path = Path(path)
+        target = path if path.exists() else path.parent
+        try:
+            if sys.platform == "win32":
+                if target.is_file():
+                    # /select, takes the path as part of the same arg.
+                    subprocess.Popen(["explorer", f"/select,{target}"])
+                else:
+                    os.startfile(str(target))
+            elif sys.platform == "darwin":
+                if target.is_file():
+                    subprocess.Popen(["open", "-R", str(target)])
+                else:
+                    subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target.parent if target.is_file() else target)])
+        except Exception as exc:
+            self._toast(f"Не удалось открыть проводник: {exc}", error=True)
+
+    def _open_last_output_folder(self, _e=None) -> None:
+        if self.last_output_folder and self.last_output_folder.exists():
+            self._open_in_explorer(self.last_output_folder)
+        else:
+            self._toast("Папка не найдена.", error=True)
+
+    def _open_file(self, path: Path) -> None:
+        """Open a file with the OS default application."""
+        path = Path(path)
+        if not path.exists():
+            self._toast("Файл не найден.", error=True)
+            return
+        try:
+            if sys.platform == "win32":
+                os.startfile(str(path))
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except Exception as exc:
+            self._toast(f"Не удалось открыть файл: {exc}", error=True)
+
     # ----- conversion ----------------------------------------------------
     def _start_conversion(self, _e) -> None:
         if self.running:
@@ -974,6 +1192,7 @@ class ConverterApp:
     def _run_conversion(self) -> None:
         total = len(self.files)
         ok_count = 0
+        last_dst: Path | None = None
         for idx, item in enumerate(self.files, start=1):
             item.status = "running"
             self.status_text.value = f"[{idx}/{total}] {item.path.name}"
@@ -991,10 +1210,15 @@ class ConverterApp:
                 item.status = "ok"
                 item.message = str(dst)
                 ok_count += 1
+                last_dst = dst
             except Exception as e:
                 item.status = "error"
                 item.message = str(e)
             self._safe_update()
+
+        if last_dst is not None:
+            self.last_output_folder = last_dst.parent
+            self.open_output_btn.visible = True
 
         self.progress.value = 1.0
         self.status_text.value = f"Готово: {ok_count} из {total}"
