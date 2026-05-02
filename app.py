@@ -183,7 +183,7 @@ class ConverterApp:
         action_bar = ft.Container(
             padding=ft.padding.symmetric(horizontal=20, vertical=14),
             border_radius=20,
-            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
             content=ft.Row(
                 controls=[
                     ft.Column(
@@ -467,7 +467,7 @@ class ConverterApp:
         return ft.Container(
             padding=ft.padding.symmetric(horizontal=12, vertical=8),
             border_radius=16,
-            bgcolor=ft.Colors.SURFACE_CONTAINER,
+            bgcolor=ft.Colors.SURFACE,
             content=ft.Row(
                 controls=[
                     leading,
