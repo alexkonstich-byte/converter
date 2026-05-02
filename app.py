@@ -298,6 +298,11 @@ class ConverterApp:
             ],
         )
 
+        self.format_hint = ft.Text(
+            "", size=12, color=ft.Colors.ON_SURFACE_VARIANT,
+            visible=False,
+        )
+
         return ft.Container(
             padding=20,
             border_radius=24,
@@ -310,6 +315,7 @@ class ConverterApp:
                         ft.Text("Во что конвертировать", size=16, weight=ft.FontWeight.W_600),
                     ]),
                     self.format_dropdown,
+                    self.format_hint,
                     ft.Text("Часто используют", size=12, color=ft.Colors.ON_SURFACE_VARIANT),
                     chips_row,
                 ],
@@ -430,7 +436,85 @@ class ConverterApp:
         # toggle empty state visibility
         self.empty_state.visible = len(self.files) == 0
         self.files_list.visible = len(self.files) > 0
+        self._refresh_target_allowed()
         self.page.update()
+
+    def _allowed_target_exts(self) -> set[str]:
+        """Targets compatible with every queued file.
+
+        image -> image only. audio -> audio only. video -> video or audio
+        (we strip the video stream when going to an audio target). Empty
+        queue means the user hasn't constrained anything yet.
+        """
+        if not self.files:
+            return set(ALL_FORMATS)
+        per_file: list[set[str]] = []
+        for item in self.files:
+            if item.kind == "image":
+                per_file.append(set(IMAGE_FORMATS))
+            elif item.kind == "audio":
+                per_file.append(set(AUDIO_FORMATS))
+            elif item.kind == "video":
+                per_file.append(set(VIDEO_FORMATS) | set(AUDIO_FORMATS))
+            else:
+                per_file.append(set())
+        allowed = per_file[0]
+        for s in per_file[1:]:
+            allowed &= s
+        return allowed
+
+    def _refresh_target_allowed(self) -> None:
+        allowed = self._allowed_target_exts()
+
+        # Dropdown: disable forbidden options.
+        for opt in self.format_dropdown.options:
+            if isinstance(opt.key, str) and opt.key.startswith("__group_"):
+                opt.disabled = True
+                continue
+            opt.disabled = opt.key not in allowed
+
+        # Chips: disable + un-select forbidden quick picks.
+        for chip in self._iter_chips():
+            chip.disabled = chip.data not in allowed
+            if chip.disabled:
+                chip.selected = False
+
+        # Drop a stale selection if the queue no longer permits it.
+        if self.target_ext and self.target_ext not in allowed:
+            self.target_ext = None
+            self.format_dropdown.value = None
+
+        # Hint line under the dropdown explains why options are dimmed.
+        kinds = {item.kind for item in self.files if item.kind}
+        if not self.files:
+            self.format_hint.visible = False
+            self.format_hint.value = ""
+        elif not allowed:
+            self.format_hint.visible = True
+            self.format_hint.value = (
+                "В очереди файлы разных типов — общий целевой формат подобрать нельзя. "
+                "Уберите часть файлов, чтобы продолжить."
+            )
+            self.format_hint.color = ft.Colors.ERROR
+        elif kinds == {"image"}:
+            self.format_hint.visible = True
+            self.format_hint.value = "В очереди только изображения — доступны форматы картинок."
+            self.format_hint.color = ft.Colors.ON_SURFACE_VARIANT
+        elif kinds == {"audio"}:
+            self.format_hint.visible = True
+            self.format_hint.value = "В очереди только аудио — доступны аудиоформаты."
+            self.format_hint.color = ft.Colors.ON_SURFACE_VARIANT
+        elif kinds == {"video"}:
+            self.format_hint.visible = True
+            self.format_hint.value = "В очереди только видео — можно сохранить как видео или извлечь звук."
+            self.format_hint.color = ft.Colors.ON_SURFACE_VARIANT
+        elif kinds == {"audio", "video"}:
+            self.format_hint.visible = True
+            self.format_hint.value = "Микс из аудио и видео — доступны только аудиоформаты."
+            self.format_hint.color = ft.Colors.ON_SURFACE_VARIANT
+        else:
+            self.format_hint.visible = False
+            self.format_hint.value = ""
 
     def _file_row(self, item: FileItem) -> ft.Control:
         try:
@@ -510,15 +594,15 @@ class ConverterApp:
             self._toast("Выберите целевой формат.", error=True)
             return
 
-        # Sanity: warn for incompatible kinds (e.g. picture -> mp3).
-        target_kind = media_kind(self.target_ext)
-        for item in self.files:
-            if item.kind == "image" and target_kind != "image":
-                self._toast(f"Картинку {item.path.name} не получится конвертировать в {self.target_ext}.", error=True)
-                return
-            if item.kind == "audio" and target_kind == "image":
-                self._toast(f"Аудио {item.path.name} не получится конвертировать в картинку.", error=True)
-                return
+        # Defensive: UI already disables incompatible targets, but double-check
+        # in case state drifted between selection and click.
+        allowed = self._allowed_target_exts()
+        if self.target_ext not in allowed:
+            self._toast(
+                "Этот формат несовместим с файлами в очереди.",
+                error=True,
+            )
+            return
 
         self.running = True
         self.convert_btn.disabled = True
