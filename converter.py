@@ -132,7 +132,50 @@ def _convert_audio(src: Path, dst: Path) -> None:
     _run_ffmpeg(args)
 
 
-def _convert_video(src: Path, dst: Path) -> None:
+# Codec name → ffmpeg encoder name. "copy" stream-copies without re-encoding.
+AUDIO_CODECS = {
+    "aac": "aac",
+    "mp3": "libmp3lame",
+    "opus": "libopus",
+    "vorbis": "libvorbis",
+    "flac": "flac",
+    "ac3": "ac3",
+    "copy": "copy",
+}
+
+# Default audio codec per video container — picked when the user leaves it on auto.
+_DEFAULT_AUDIO_FOR_CONTAINER = {
+    "mp4": "aac", "m4v": "aac", "mov": "aac",
+    "mkv": "aac",
+    "webm": "opus",
+    "avi": "mp3",
+    "flv": "aac",
+    "wmv": "aac",
+    "mpeg": "mp3", "mpg": "mp3", "ts": "aac",
+}
+
+
+def _audio_codec_args(codec_key: str) -> list[str]:
+    """Return ffmpeg args for the given audio codec key."""
+    encoder = AUDIO_CODECS[codec_key]
+    if encoder == "copy":
+        return ["-c:a", "copy"]
+    args = ["-c:a", encoder]
+    # Sensible bitrate defaults for lossy codecs.
+    if encoder == "aac":
+        args += ["-b:a", "192k"]
+    elif encoder == "libmp3lame":
+        args += ["-q:a", "2"]
+    elif encoder == "libopus":
+        args += ["-b:a", "128k"]
+    elif encoder == "libvorbis":
+        args += ["-q:a", "5"]
+    elif encoder == "ac3":
+        args += ["-b:a", "192k"]
+    return args
+
+
+def _convert_video(src: Path, dst: Path, audio_codec: str | None = None) -> None:
     target = dst.suffix.lower().lstrip(".")
     src_kind = media_kind(src.suffix)
 
@@ -144,15 +187,23 @@ def _convert_video(src: Path, dst: Path) -> None:
     if src_kind == "video" and target in AUDIO_FORMATS:
         return _convert_audio(src, dst)
 
+    # Resolve audio codec: explicit user pick wins, else container default.
+    if not audio_codec:
+        audio_codec = _DEFAULT_AUDIO_FOR_CONTAINER.get(target, "aac")
+    if audio_codec not in AUDIO_CODECS:
+        raise ConversionError(f"Неизвестный аудиокодек: {audio_codec}")
+
     args = ["ffmpeg", "-y", "-i", str(src)]
     if target == "webm":
-        args += ["-c:v", "libvpx-vp9", "-b:v", "1M", "-c:a", "libopus"]
-    elif target == "mp4" or target == "m4v" or target == "mov":
-        args += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
-                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+        args += ["-c:v", "libvpx-vp9", "-b:v", "1M"]
+        args += _audio_codec_args(audio_codec)
+    elif target in ("mp4", "m4v", "mov"):
+        args += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+        args += _audio_codec_args(audio_codec)
+        args += ["-movflags", "+faststart"]
     elif target == "mkv":
-        args += ["-c:v", "libx264", "-preset", "medium", "-crf", "20",
-                 "-c:a", "aac", "-b:a", "192k"]
+        args += ["-c:v", "libx264", "-preset", "medium", "-crf", "20"]
+        args += _audio_codec_args(audio_codec)
     elif target == "gif":
         # Build a palette pass for higher quality animated GIFs.
         palette = dst.with_suffix(".palette.png")
@@ -171,12 +222,33 @@ def _convert_video(src: Path, dst: Path) -> None:
             if palette.exists():
                 palette.unlink()
         return
+    else:
+        # Containers we don't have a specific recipe for — let ffmpeg pick.
+        args += _audio_codec_args(audio_codec)
     args.append(str(dst))
     _run_ffmpeg(args)
 
 
-def convert(src: Path, dst: Path) -> None:
-    """Convert a single file. Caller picks the destination extension."""
+def extract_video_thumbnail(src: Path, dst: Path, timestamp: str = "00:00:01") -> None:
+    """Grab a single frame as a JPEG. Used to render a video preview thumbnail."""
+    if not ffmpeg_available():
+        raise ConversionError("ffmpeg не найден.")
+    src = Path(src)
+    dst = Path(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    _run_ffmpeg([
+        "ffmpeg", "-y", "-ss", timestamp, "-i", str(src),
+        "-frames:v", "1", "-vf", "scale=480:-1:flags=lanczos",
+        str(dst),
+    ])
+
+
+def convert(src: Path, dst: Path, audio_codec: str | None = None) -> None:
+    """Convert a single file. Caller picks the destination extension.
+
+    audio_codec only applies to video-to-video conversions (controls the
+    embedded audio track). Other paths ignore it.
+    """
     src = Path(src)
     dst = Path(dst)
     if not src.exists():
@@ -202,7 +274,7 @@ def convert(src: Path, dst: Path) -> None:
 
     # Anything involving video, or video-audio routing
     if dst_kind == "video" or src_kind == "video":
-        _convert_video(src, dst)
+        _convert_video(src, dst, audio_codec=audio_codec)
         return
 
     # Audio -> image or image -> audio doesn't make sense.
