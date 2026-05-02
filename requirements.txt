@@ -1,2 +1,4 @@
-flet>=0.25.0
+# flet 0.28+ is a major API rewrite (async file picker, no on_result callback).
+# Pinning to the last 0.27.x release keeps the current callback-based code working.
+flet>=0.25.0,<0.28
 Pillow>=10.0.0
