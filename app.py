@@ -496,16 +496,37 @@ class ConverterApp:
 
     # ----- Settings card ------------------------------------------------
     def _help(self, message: str) -> ft.IconButton:
-        """Standardized help-icon button with a tooltip."""
+        """Click-to-open help button — opens a dialog with the explanation."""
         return ft.IconButton(
             icon=ft.Icons.HELP_OUTLINE_ROUNDED,
             icon_size=16,
-            tooltip=message,
+            tooltip="Что это?",
+            on_click=lambda _e, m=message: self._show_help_dialog(m),
             style=ft.ButtonStyle(
                 color={"": ft.Colors.OUTLINE, "hovered": ft.Colors.PRIMARY},
                 padding=ft.padding.all(2),
             ),
         )
+
+    def _show_help_dialog(self, message: str) -> None:
+        dlg = ft.AlertDialog(
+            modal=False,
+            title=ft.Row([
+                ft.Icon(ft.Icons.HELP_OUTLINE_ROUNDED, color=ft.Colors.PRIMARY),
+                ft.Text("Подсказка"),
+            ]),
+            content=ft.Container(
+                width=440,
+                content=ft.Text(message, size=13, selectable=True),
+            ),
+            actions=[
+                ft.TextButton(
+                    "Понятно",
+                    on_click=lambda _e: self.page.close(dlg),
+                ),
+            ],
+        )
+        self.page.open(dlg)
 
     def _row_with_help(self, control: ft.Control, help_text: str) -> ft.Row:
         return ft.Row(
@@ -636,20 +657,20 @@ class ConverterApp:
             label="Битрейт", value="auto", border_radius=12, filled=True,
             options=[
                 ft.dropdown.Option("auto", "Авто"),
-                ft.dropdown.Option("96",  "96 kbps · речь"),
-                ft.dropdown.Option("128", "128 kbps · стандарт"),
-                ft.dropdown.Option("192", "192 kbps · хорошо"),
-                ft.dropdown.Option("256", "256 kbps · высокое"),
-                ft.dropdown.Option("320", "320 kbps · максимум"),
+                ft.dropdown.Option("96",  "96 kbps"),
+                ft.dropdown.Option("128", "128 kbps"),
+                ft.dropdown.Option("192", "192 kbps"),
+                ft.dropdown.Option("256", "256 kbps"),
+                ft.dropdown.Option("320", "320 kbps"),
             ],
             on_change=self._on_audio_bitrate_change,
         )
         self.audio_sample_dropdown = ft.Dropdown(
-            label="Частота дискретизации", value="auto", border_radius=12, filled=True,
+            label="Частота", value="auto", border_radius=12, filled=True,
             options=[
-                ft.dropdown.Option("auto",  "Авто (как в источнике)"),
-                ft.dropdown.Option("44100", "44.1 kHz · CD-качество"),
-                ft.dropdown.Option("48000", "48 kHz · видео-стандарт"),
+                ft.dropdown.Option("auto",  "Авто"),
+                ft.dropdown.Option("44100", "44.1 kHz · CD"),
+                ft.dropdown.Option("48000", "48 kHz · видео"),
                 ft.dropdown.Option("96000", "96 kHz · студия"),
             ],
             on_change=self._on_sample_rate_change,
@@ -697,21 +718,21 @@ class ConverterApp:
 
     def _build_video_settings(self) -> ft.Container:
         self.video_codec_dropdown = ft.Dropdown(
-            label="Видеокодек", value="auto", border_radius=12, filled=True,
+            label="Кодек", value="auto", border_radius=12, filled=True,
             options=[
-                ft.dropdown.Option("auto", "Авто (по контейнеру)"),
-                ft.dropdown.Option("h264", "H.264 · максимум совместимости"),
-                ft.dropdown.Option("h265", "H.265 / HEVC · ~30% меньше"),
-                ft.dropdown.Option("av1",  "AV1 · самый эффективный"),
+                ft.dropdown.Option("auto", "Авто"),
+                ft.dropdown.Option("h264", "H.264"),
+                ft.dropdown.Option("h265", "H.265 / HEVC"),
+                ft.dropdown.Option("av1",  "AV1"),
             ],
             on_change=self._on_video_codec_change,
         )
 
         self.video_bitrate_mode_dropdown = ft.Dropdown(
-            label="Режим битрейта", value="crf", border_radius=12, filled=True,
+            label="Режим", value="crf", border_radius=12, filled=True,
             options=[
-                ft.dropdown.Option("crf", "CRF · постоянное качество"),
-                ft.dropdown.Option("cbr", "CBR · фиксированный битрейт"),
+                ft.dropdown.Option("crf", "CRF · качество"),
+                ft.dropdown.Option("cbr", "CBR · битрейт"),
             ],
             on_change=self._on_video_mode_change,
         )
@@ -733,12 +754,12 @@ class ConverterApp:
         )
 
         self.video_fps_dropdown = ft.Dropdown(
-            label="Частота кадров", value="auto", border_radius=12, filled=True,
+            label="FPS", value="auto", border_radius=12, filled=True,
             options=[
-                ft.dropdown.Option("auto", "Как в источнике"),
-                ft.dropdown.Option("24",   "24 fps · кинематограф"),
-                ft.dropdown.Option("30",   "30 fps · стандарт"),
-                ft.dropdown.Option("60",   "60 fps · плавное движение"),
+                ft.dropdown.Option("auto", "Авто"),
+                ft.dropdown.Option("24",   "24 · кино"),
+                ft.dropdown.Option("30",   "30 · стандарт"),
+                ft.dropdown.Option("60",   "60 · плавно"),
             ],
             on_change=self._on_fps_change,
         )
@@ -746,12 +767,12 @@ class ConverterApp:
         self.video_resolution_dropdown = ft.Dropdown(
             label="Разрешение", value="auto", border_radius=12, filled=True,
             options=[
-                ft.dropdown.Option("auto", "Как в источнике"),
-                ft.dropdown.Option("480",  "480p (SD)"),
-                ft.dropdown.Option("720",  "720p (HD)"),
-                ft.dropdown.Option("1080", "1080p (Full HD)"),
-                ft.dropdown.Option("1440", "1440p (2K)"),
-                ft.dropdown.Option("2160", "2160p (4K)"),
+                ft.dropdown.Option("auto", "Авто"),
+                ft.dropdown.Option("480",  "480p · SD"),
+                ft.dropdown.Option("720",  "720p · HD"),
+                ft.dropdown.Option("1080", "1080p · FHD"),
+                ft.dropdown.Option("1440", "1440p · 2K"),
+                ft.dropdown.Option("2160", "2160p · 4K"),
             ],
             on_change=self._on_resolution_change,
         )
@@ -817,11 +838,11 @@ class ConverterApp:
         )
 
         self.overwrite_dropdown = ft.Dropdown(
-            label="Если файл уже существует",
+            label="Если файл существует",
             value=self.settings.overwrite_mode,
             border_radius=12, filled=True,
             options=[
-                ft.dropdown.Option("rename",    "Сохранить с новым именем (_1, _2…)"),
+                ft.dropdown.Option("rename",    "Новое имя"),
                 ft.dropdown.Option("overwrite", "Перезаписать"),
                 ft.dropdown.Option("skip",      "Пропустить"),
             ],
