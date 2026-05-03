@@ -1,19 +1,34 @@
 """Conversion engine: images via Pillow, audio/video via ffmpeg."""
 from __future__ import annotations
 
+import hashlib
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
-from PIL import Image, ImageSequence
+from PIL import Image, ImageDraw, ImageFont, ImageSequence
+# PDF writing internally encodes raster pages via the JPEG plugin; importing
+# it explicitly guarantees it's registered before PdfImagePlugin runs.
+from PIL import JpegImagePlugin  # noqa: F401
+from PIL import PngImagePlugin   # noqa: F401
+
+# Optional: pillow-avif-plugin registers AVIF read/write into Pillow.
+try:
+    import pillow_avif  # noqa: F401
+    AVIF_AVAILABLE = True
+except ImportError:
+    AVIF_AVAILABLE = False
 
 IMAGE_FORMATS = [
     "png", "jpg", "jpeg", "webp", "bmp", "tiff", "tif",
-    "gif", "ico", "tga", "ppm", "pcx",
+    "gif", "ico", "tga", "ppm", "pcx", "pdf",
 ]
+if AVIF_AVAILABLE:
+    IMAGE_FORMATS.append("avif")
 AUDIO_FORMATS = [
     "mp3", "wav", "flac", "ogg", "m4a", "aac", "wma", "opus", "aiff",
 ]
@@ -112,9 +127,27 @@ class ConversionSettings:
     video_fps: Optional[int] = None           # None = keep / 24 / 30 / 60
     video_height: Optional[int] = None        # None = keep / 480 / 720 / 1080 / 2160
 
+    # Hardware acceleration
+    hwaccel: Optional[str] = None             # None=CPU / "nvenc" / "qsv" / "amf" / "videotoolbox"
+
+    # Trim (video / audio)
+    trim_start_s: Optional[float] = None
+    trim_end_s: Optional[float] = None
+
+    # Track selection (None = default first stream)
+    audio_track_index: Optional[int] = None
+
+    # Watermark (text only for now)
+    watermark_text: Optional[str] = None
+    watermark_position: str = "bottom-right"  # top-left / top-right / bottom-left / bottom-right / center
+    watermark_opacity: float = 0.7            # 0..1
+    watermark_color: str = "white"            # css color name / #RRGGBB
+
     # Behaviour
     copy_metadata: bool = True
     overwrite_mode: str = "rename"            # "rename" / "overwrite" / "skip"
+    low_priority: bool = False                # run ffmpeg with reduced CPU priority
+    compute_checksum: Optional[str] = None    # None / "md5" / "sha256"
 
 
 def default_settings() -> ConversionSettings:
@@ -146,24 +179,49 @@ def _run_ffmpeg(
     on_log: Optional[Callable[[str], None]] = None,
     on_progress: Optional[Callable[[float], None]] = None,
     duration_s: Optional[float] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
+    low_priority: bool = False,
 ) -> None:
-    """Run ffmpeg, optionally streaming logs and parsing progress timestamps."""
+    """Run ffmpeg, optionally streaming logs and parsing progress timestamps.
+
+    ``on_proc`` is invoked with the live ``subprocess.Popen`` so the caller
+    can suspend/resume it. ``low_priority`` lowers CPU scheduling priority
+    so the system stays responsive during long encodes.
+    """
     if not ffmpeg_available():
         raise ConversionError(
             "ffmpeg не найден в PATH. Установите ffmpeg, чтобы конвертировать аудио и видео."
         )
 
-    # ffmpeg writes progress to stderr by default; "-progress pipe:1" gives a
-    # stable key=value stream on stdout that's easier to parse, but we'd lose
-    # the human-readable error text. Keep stderr-based parsing.
+    flags = _creationflags()
+    if low_priority and os.name == "nt":
+        # BELOW_NORMAL_PRIORITY_CLASS — the OS schedules ffmpeg less
+        # aggressively, so the rest of the desktop stays smooth.
+        flags |= 0x00004000
+    preexec = None
+    if low_priority and os.name != "nt":
+        # POSIX: fork the child with nice(10) so it runs at lower priority.
+        def _renice():
+            try:
+                os.nice(10)
+            except Exception:
+                pass
+        preexec = _renice
+
     proc = subprocess.Popen(
         args,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
-        creationflags=_creationflags(),
+        creationflags=flags,
+        preexec_fn=preexec,
     )
+    if on_proc:
+        try:
+            on_proc(proc)
+        except Exception:
+            pass
 
     tail: list[str] = []
     assert proc.stdout is not None
@@ -179,8 +237,6 @@ def _run_ffmpeg(
                 on_log(line)
             except Exception:
                 pass
-        # ffmpeg progress lines look like:
-        # frame= 123 fps= 24 q=28.0 size=...time=00:00:05.04 bitrate=...
         if on_progress and duration_s and "time=" in line:
             idx = line.find("time=")
             ts = line[idx + 5:idx + 16]
@@ -247,6 +303,154 @@ def probe_video_bitrate_kbps(path: Path) -> Optional[int]:
         return None
 
 
+@dataclass
+class StreamInfo:
+    index: int
+    kind: str                  # "audio" / "subtitle"
+    codec: str
+    language: Optional[str]
+    title: Optional[str]
+    channels: Optional[int]    # audio only
+
+    @property
+    def label(self) -> str:
+        bits = []
+        if self.language:
+            bits.append(self.language.upper())
+        if self.title:
+            bits.append(self.title)
+        if self.codec:
+            bits.append(self.codec)
+        if self.kind == "audio" and self.channels:
+            bits.append(f"{self.channels}ch")
+        return " · ".join(bits) if bits else f"#{self.index}"
+
+
+def probe_streams(path: Path) -> list[StreamInfo]:
+    """Enumerate audio + subtitle streams via ffprobe (-show_streams)."""
+    if not ffprobe_available():
+        return []
+    try:
+        proc = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries",
+                "stream=index,codec_name,codec_type,channels:stream_tags=language,title",
+                "-of", "default=noprint_wrappers=1", str(path),
+            ],
+            capture_output=True, text=True, timeout=10,
+            creationflags=_creationflags(),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+
+    streams: list[StreamInfo] = []
+    cur: dict = {}
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("[STREAM]"):
+            cur = {}
+        elif line.startswith("[/STREAM]"):
+            kind_map = {"audio": "audio", "subtitle": "subtitle"}
+            kind = kind_map.get(cur.get("codec_type", ""))
+            if kind is None:
+                continue
+            try:
+                idx = int(cur.get("index", "-1"))
+            except ValueError:
+                idx = -1
+            channels = None
+            if cur.get("channels"):
+                try:
+                    channels = int(cur["channels"])
+                except ValueError:
+                    channels = None
+            streams.append(StreamInfo(
+                index=idx,
+                kind=kind,
+                codec=cur.get("codec_name", "?"),
+                language=cur.get("TAG:language") or cur.get("tag:language"),
+                title=cur.get("TAG:title") or cur.get("tag:title"),
+                channels=channels,
+            ))
+        elif "=" in line:
+            key, _, val = line.partition("=")
+            cur[key] = val
+    return streams
+
+
+# ---------------------------------------------------------------------------
+# Hardware-accelerated encoder discovery
+# ---------------------------------------------------------------------------
+
+# Encoder lookup: (codec, hwaccel) → ffmpeg encoder name.
+HW_ENCODERS = {
+    ("h264", "nvenc"):        "h264_nvenc",
+    ("h264", "qsv"):          "h264_qsv",
+    ("h264", "amf"):          "h264_amf",
+    ("h264", "videotoolbox"): "h264_videotoolbox",
+    ("h265", "nvenc"):        "hevc_nvenc",
+    ("h265", "qsv"):          "hevc_qsv",
+    ("h265", "amf"):          "hevc_amf",
+    ("h265", "videotoolbox"): "hevc_videotoolbox",
+    ("av1",  "nvenc"):        "av1_nvenc",
+    ("av1",  "qsv"):          "av1_qsv",
+    ("av1",  "amf"):          "av1_amf",
+}
+
+_HWACCEL_CACHE: Optional[set[str]] = None
+
+
+def detect_available_encoders() -> set[str]:
+    """Run ``ffmpeg -encoders`` once and cache the names that are present."""
+    global _HWACCEL_CACHE
+    if _HWACCEL_CACHE is not None:
+        return _HWACCEL_CACHE
+    if not ffmpeg_available():
+        _HWACCEL_CACHE = set()
+        return _HWACCEL_CACHE
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=_creationflags(),
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        _HWACCEL_CACHE = set()
+        return _HWACCEL_CACHE
+
+    names: set[str] = set()
+    for line in (proc.stdout or "").splitlines():
+        # Lines look like " V..... libx264              H.264 / AVC ..."
+        m = re.match(r"\s+[A-Z\.]{6}\s+(\S+)\s+", line)
+        if m:
+            names.add(m.group(1))
+    _HWACCEL_CACHE = names
+    return names
+
+
+def detect_available_hwaccels(codec: str) -> list[str]:
+    """Return the hwaccel keys (nvenc/qsv/amf/videotoolbox) usable for this codec."""
+    encoders = detect_available_encoders()
+    available: list[str] = []
+    for (c, hw), enc_name in HW_ENCODERS.items():
+        if c == codec and enc_name in encoders:
+            available.append(hw)
+    return available
+
+
+# ---------------------------------------------------------------------------
+# Checksum helpers
+# ---------------------------------------------------------------------------
+
+def file_checksum(path: Path, algo: str = "sha256") -> str:
+    """Compute MD5 or SHA-256 of a file, returned as hex digest."""
+    h = hashlib.new(algo)
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 # ---------------------------------------------------------------------------
 # Image conversion
 # ---------------------------------------------------------------------------
@@ -273,6 +477,68 @@ def _resize_image(img: Image.Image, settings: ConversionSettings) -> Image.Image
     return img.resize(new_size, Image.LANCZOS)
 
 
+def _stamp_watermark(img: Image.Image, settings: ConversionSettings) -> Image.Image:
+    text = (settings.watermark_text or "").strip()
+    if not text:
+        return img
+    img = img.convert("RGBA") if img.mode != "RGBA" else img.copy()
+    layer = Image.new("RGBA", img.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    # Pick a font size proportional to the shorter image side.
+    short = min(img.size)
+    size = max(12, int(short * 0.045))
+    try:
+        font = ImageFont.truetype("arial.ttf", size)
+    except (IOError, OSError):
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", size)
+        except (IOError, OSError):
+            font = ImageFont.load_default()
+
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pad = max(8, size // 4)
+    pos = settings.watermark_position
+    if pos == "top-left":
+        xy = (pad, pad)
+    elif pos == "top-right":
+        xy = (img.size[0] - tw - pad, pad)
+    elif pos == "bottom-left":
+        xy = (pad, img.size[1] - th - pad)
+    elif pos == "center":
+        xy = ((img.size[0] - tw) // 2, (img.size[1] - th) // 2)
+    else:  # bottom-right
+        xy = (img.size[0] - tw - pad, img.size[1] - th - pad)
+
+    alpha = max(0.0, min(1.0, settings.watermark_opacity))
+    color = settings.watermark_color or "white"
+    # Soft dark backplate for contrast.
+    plate = (0, 0, 0, int(255 * alpha * 0.4))
+    draw.rectangle(
+        [xy[0] - pad // 2, xy[1] - pad // 2,
+         xy[0] + tw + pad // 2, xy[1] + th + pad // 2],
+        fill=plate,
+    )
+    draw.text(xy, text, font=font, fill=_color_with_alpha(color, alpha))
+    return Image.alpha_composite(img, layer)
+
+
+def _color_with_alpha(name: str, alpha: float) -> tuple[int, int, int, int]:
+    a = int(255 * max(0.0, min(1.0, alpha)))
+    presets = {
+        "white": (255, 255, 255), "black": (0, 0, 0),
+        "yellow": (255, 220, 60), "red": (240, 70, 70),
+    }
+    if name.startswith("#") and len(name) == 7:
+        try:
+            r = int(name[1:3], 16); g = int(name[3:5], 16); b = int(name[5:7], 16)
+            return (r, g, b, a)
+        except ValueError:
+            pass
+    rgb = presets.get(name.lower(), (255, 255, 255))
+    return rgb + (a,)
+
+
 def _convert_image(src: Path, dst: Path, settings: ConversionSettings) -> None:
     img = Image.open(src)
     target = dst.suffix.lower().lstrip(".")
@@ -291,9 +557,10 @@ def _convert_image(src: Path, dst: Path, settings: ConversionSettings) -> None:
         return
 
     img = _resize_image(img, settings)
+    img = _stamp_watermark(img, settings)
 
     # Formats that don't accept alpha — flatten onto white.
-    if target in ("jpg", "jpeg", "bmp", "pcx") and img.mode in ("RGBA", "LA", "P"):
+    if target in ("jpg", "jpeg", "bmp", "pcx", "pdf") and img.mode in ("RGBA", "LA", "P"):
         background = Image.new("RGB", img.size, (255, 255, 255))
         rgba = img.convert("RGBA")
         background.paste(rgba, mask=rgba.split()[-1])
@@ -310,8 +577,14 @@ def _convert_image(src: Path, dst: Path, settings: ConversionSettings) -> None:
     elif target == "webp":
         save_kwargs["quality"] = quality
         save_kwargs["method"] = 6  # smaller file at slight CPU cost
+    elif target == "avif":
+        save_kwargs["quality"] = quality
     elif target == "png":
         save_kwargs["optimize"] = True
+    elif target == "pdf":
+        # Single-image PDF — multi-image PDFs go through images_to_pdf().
+        if img.mode != "RGB":
+            img = img.convert("RGB")
 
     # EXIF: keep by default, strip if requested.
     if not settings.image_strip_exif:
@@ -320,6 +593,27 @@ def _convert_image(src: Path, dst: Path, settings: ConversionSettings) -> None:
             save_kwargs["exif"] = exif
 
     img.save(dst, **save_kwargs)
+
+
+def images_to_pdf(srcs: list[Path], dst: Path, settings: ConversionSettings) -> None:
+    """Combine multiple images into one PDF document, preserving order."""
+    if not srcs:
+        raise ConversionError("Нет картинок для PDF.")
+    pages: list[Image.Image] = []
+    for src in srcs:
+        img = Image.open(src)
+        img = _resize_image(img, settings)
+        img = _stamp_watermark(img, settings)
+        if img.mode in ("RGBA", "LA", "P"):
+            bg = Image.new("RGB", img.size, (255, 255, 255))
+            rgba = img.convert("RGBA")
+            bg.paste(rgba, mask=rgba.split()[-1])
+            img = bg
+        elif img.mode != "RGB":
+            img = img.convert("RGB")
+        pages.append(img)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    pages[0].save(dst, save_all=True, append_images=pages[1:], format="PDF")
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +659,16 @@ def _convert_audio(
     on_log: Optional[Callable[[str], None]] = None,
     on_progress: Optional[Callable[[float], None]] = None,
     duration_s: Optional[float] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> None:
     target = dst.suffix.lower().lstrip(".")
-    args = ["ffmpeg", "-y", "-i", str(src), "-vn"]
+    args = ["ffmpeg", "-y"]
+    # Trim happens before -i so seeking is fast and accurate.
+    if settings.trim_start_s and settings.trim_start_s > 0:
+        args += ["-ss", str(settings.trim_start_s)]
+    if settings.trim_end_s and settings.trim_end_s > (settings.trim_start_s or 0):
+        args += ["-to", str(settings.trim_end_s)]
+    args += ["-i", str(src), "-vn"]
 
     # Pick a codec per target container — same as before but routed through
     # _audio_codec_args so user bitrate/sample-rate/channels get applied.
@@ -398,28 +699,81 @@ def _convert_audio(
         args += ["-map_metadata", "0"]
 
     args.append(str(dst))
-    _run_ffmpeg(args, on_log=on_log, on_progress=on_progress, duration_s=duration_s)
+    _run_ffmpeg(args, on_log=on_log, on_progress=on_progress, duration_s=duration_s,
+                on_proc=on_proc, low_priority=settings.low_priority)
 
 
 # ---------------------------------------------------------------------------
 # Video conversion
 # ---------------------------------------------------------------------------
 
+def _resolve_video_encoder(codec_key: str, settings: ConversionSettings) -> str:
+    """Pick the actual ffmpeg encoder name based on codec + hwaccel choice.
+
+    Falls back to the software encoder if the requested HW one isn't built
+    into the user's ffmpeg.
+    """
+    if settings.hwaccel and settings.hwaccel != "none":
+        hw_name = HW_ENCODERS.get((codec_key, settings.hwaccel))
+        if hw_name and hw_name in detect_available_encoders():
+            return hw_name
+    return VIDEO_ENCODERS[codec_key]
+
+
 def _video_codec_args(codec_key: str, settings: ConversionSettings) -> list[str]:
-    encoder = VIDEO_ENCODERS[codec_key]
+    encoder = _resolve_video_encoder(codec_key, settings)
     args = ["-c:v", encoder]
+
+    is_hw = encoder.endswith(("_nvenc", "_qsv", "_amf", "_videotoolbox"))
+    is_av1_sw = encoder == "libsvtav1"
 
     if settings.video_bitrate_mode == "cbr":
         kbps = max(100, settings.video_bitrate_kbps)
         args += ["-b:v", f"{kbps}k", "-maxrate", f"{kbps}k", "-bufsize", f"{kbps * 2}k"]
-        # AV1 (svt-av1) wants -b:v; x264/x265 work the same way.
     else:
         crf = max(0, min(63, settings.video_crf))
         if encoder in ("libx264", "libx265"):
             args += ["-preset", "medium", "-crf", str(crf)]
-        elif encoder == "libsvtav1":
+        elif is_av1_sw:
             args += ["-preset", "8", "-crf", str(crf)]
+        elif encoder.endswith("_nvenc"):
+            # NVENC uses constant-quality (-cq) instead of CRF.
+            args += ["-preset", "p5", "-rc", "vbr", "-cq", str(crf)]
+        elif encoder.endswith("_qsv"):
+            args += ["-preset", "medium", "-global_quality", str(crf)]
+        elif encoder.endswith("_amf"):
+            args += ["-quality", "balanced", "-rc", "cqp", "-qp_i", str(crf), "-qp_p", str(crf)]
+        elif encoder.endswith("_videotoolbox"):
+            # videotoolbox doesn't have a CRF; approximate via -q:v (1..100, higher=worse).
+            args += ["-q:v", str(60 + (crf - 23))]
     return args
+
+
+def _watermark_filter(settings: ConversionSettings) -> Optional[str]:
+    text = (settings.watermark_text or "").strip()
+    if not text:
+        return None
+    # Escape characters that drawtext treats specially.
+    safe = (text.replace("\\", "\\\\")
+                .replace(":", "\\:")
+                .replace("'", "\\'")
+                .replace("%", "\\%"))
+    pos_map = {
+        "top-left":     "x=20:y=20",
+        "top-right":    "x=w-tw-20:y=20",
+        "bottom-left":  "x=20:y=h-th-20",
+        "bottom-right": "x=w-tw-20:y=h-th-20",
+        "center":       "x=(w-tw)/2:y=(h-th)/2",
+    }
+    pos = pos_map.get(settings.watermark_position, pos_map["bottom-right"])
+    alpha = max(0.0, min(1.0, settings.watermark_opacity))
+    color = settings.watermark_color or "white"
+    # fontsize scales with output height — drawtext supports h*0.04 expressions.
+    return (
+        f"drawtext=text='{safe}':fontcolor={color}@{alpha:.2f}"
+        f":fontsize=h*0.045:box=1:boxcolor=black@{alpha * 0.4:.2f}"
+        f":boxborderw=8:{pos}"
+    )
 
 
 def _video_filter(settings: ConversionSettings) -> Optional[str]:
@@ -429,6 +783,9 @@ def _video_filter(settings: ConversionSettings) -> Optional[str]:
         parts.append(f"scale=-2:{settings.video_height}:flags=lanczos")
     if settings.video_fps:
         parts.append(f"fps={settings.video_fps}")
+    wm = _watermark_filter(settings)
+    if wm:
+        parts.append(wm)
     return ",".join(parts) if parts else None
 
 
@@ -439,6 +796,7 @@ def _convert_video(
     on_log: Optional[Callable[[str], None]] = None,
     on_progress: Optional[Callable[[float], None]] = None,
     duration_s: Optional[float] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> None:
     target = dst.suffix.lower().lstrip(".")
     src_kind = media_kind(src.suffix)
@@ -448,7 +806,7 @@ def _convert_video(
 
     # Video -> audio: strip video stream.
     if src_kind == "video" and target in AUDIO_FORMATS:
-        return _convert_audio(src, dst, settings, on_log, on_progress, duration_s)
+        return _convert_audio(src, dst, settings, on_log, on_progress, duration_s, on_proc)
 
     # Video codec
     video_codec = settings.video_codec or DEFAULT_VIDEO_CODEC_FOR_CONTAINER.get(target, "h264")
@@ -460,9 +818,17 @@ def _convert_video(
     if audio_codec not in AUDIO_CODECS:
         raise ConversionError(f"Неизвестный аудиокодек: {audio_codec}")
 
-    args = ["ffmpeg", "-y", "-i", str(src)]
+    args = ["ffmpeg", "-y"]
 
-    # GIF — special multi-pass palette path.
+    # Trim: place -ss / -to BEFORE -i for fast seek.
+    if settings.trim_start_s and settings.trim_start_s > 0:
+        args += ["-ss", str(settings.trim_start_s)]
+    if settings.trim_end_s and settings.trim_end_s > (settings.trim_start_s or 0):
+        args += ["-to", str(settings.trim_end_s)]
+
+    args += ["-i", str(src)]
+
+    # GIF — special multi-pass palette path (no audio, no fancy options).
     if target == "gif":
         palette = dst.with_suffix(".palette.png")
         try:
@@ -470,18 +836,22 @@ def _convert_video(
                 ["ffmpeg", "-y", "-i", str(src),
                  "-vf", "fps=15,scale=480:-1:flags=lanczos,palettegen",
                  str(palette)],
-                on_log=on_log,
+                on_log=on_log, low_priority=settings.low_priority,
             )
             _run_ffmpeg(
                 ["ffmpeg", "-y", "-i", str(src), "-i", str(palette),
                  "-lavfi", "fps=15,scale=480:-1:flags=lanczos [x]; [x][1:v] paletteuse",
                  str(dst)],
-                on_log=on_log,
+                on_log=on_log, on_proc=on_proc, low_priority=settings.low_priority,
             )
         finally:
             if palette.exists():
                 palette.unlink()
         return
+
+    # Pick a specific audio track if the user asked for one.
+    if settings.audio_track_index is not None:
+        args += ["-map", "0:v:0", "-map", f"0:{settings.audio_track_index}"]
 
     args += _video_codec_args(video_codec, settings)
     args += _audio_codec_args(audio_codec, settings)
@@ -497,7 +867,8 @@ def _convert_video(
         args += ["-map_metadata", "0"]
 
     args.append(str(dst))
-    _run_ffmpeg(args, on_log=on_log, on_progress=on_progress, duration_s=duration_s)
+    _run_ffmpeg(args, on_log=on_log, on_progress=on_progress, duration_s=duration_s,
+                on_proc=on_proc, low_priority=settings.low_priority)
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +898,7 @@ def convert(
     on_log: Optional[Callable[[str], None]] = None,
     on_progress: Optional[Callable[[float], None]] = None,
     duration_s: Optional[float] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
 ) -> None:
     """Convert a single file using the given settings.
 
@@ -556,11 +928,11 @@ def convert(
         return
 
     if src_kind == "audio" and dst_kind == "audio":
-        _convert_audio(src, dst, settings, on_log, on_progress, duration_s)
+        _convert_audio(src, dst, settings, on_log, on_progress, duration_s, on_proc)
         return
 
     if dst_kind == "video" or src_kind == "video":
-        _convert_video(src, dst, settings, on_log, on_progress, duration_s)
+        _convert_video(src, dst, settings, on_log, on_progress, duration_s, on_proc)
         return
 
     raise ConversionError(f"Не умею конвертировать {src_kind} → {dst_kind}.")

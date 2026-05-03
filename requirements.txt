@@ -2,3 +2,9 @@
 # Pinning to the last 0.27.x release keeps the current callback-based code working.
 flet>=0.25.0,<0.28
 Pillow>=10.0.0
+
+# AVIF support — registers AVIF read/write into Pillow.
+pillow-avif-plugin>=1.4.0
+
+# Used to suspend/resume the live ffmpeg subprocess (Pause button).
+psutil>=5.9.0

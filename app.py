@@ -28,6 +28,7 @@ from converter import (
     ALL_FORMATS,
     AUDIO_CODECS,
     AUDIO_FORMATS,
+    AVIF_AVAILABLE,
     IMAGE_FORMATS,
     PRESETS,
     VIDEO_FORMATS,
@@ -36,14 +37,24 @@ from converter import (
     batch_convert,
     convert,
     default_settings,
+    detect_available_hwaccels,
     estimate_output_size_bytes,
     extract_video_thumbnail,
     ffmpeg_available,
+    file_checksum,
     formats_for_kind,
     get_preset,
+    images_to_pdf,
     media_kind,
     probe_duration,
+    probe_streams,
 )
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 
 # Material You seed color — generates the full tonal palette in Flet.
@@ -74,6 +85,7 @@ class FileItem:
         self.dst: Path | None = None
         self.duration_s: float = 0.0
         self.estimated_size: int | None = None
+        self.checksum: str | None = None
 
 
 class ConverterApp:
@@ -94,6 +106,11 @@ class ConverterApp:
         self._current_duration_s: float = 0.0
         self._eta_thread: threading.Thread | None = None
         self._eta_stop = threading.Event()
+
+        # Live ffmpeg process (for pause / cancel).
+        self._current_proc = None
+        self._is_paused: bool = False
+        self._is_compact: bool = False
 
         # Log console
         self.log_lines: list[str] = []
@@ -236,6 +253,17 @@ class ConverterApp:
             tooltip="Показать журнал ffmpeg",
             on_click=self._open_log_dialog,
         )
+        self.pause_btn = ft.IconButton(
+            icon=ft.Icons.PAUSE_ROUNDED,
+            tooltip="Приостановить конвертацию",
+            visible=False,
+            on_click=self._toggle_pause,
+        )
+        self.compact_btn = ft.IconButton(
+            icon=ft.Icons.PICTURE_IN_PICTURE_ALT_OUTLINED,
+            tooltip="Компактный режим",
+            on_click=self._toggle_compact,
+        )
         self.convert_btn = ft.FilledButton(
             "Конвертировать",
             icon=ft.Icons.PLAY_ARROW_ROUNDED,
@@ -269,6 +297,8 @@ class ConverterApp:
                         controls=[self.status_text, self.eta_text, self.progress],
                     ),
                     self.log_btn,
+                    self.pause_btn,
+                    self.compact_btn,
                     self.open_output_btn,
                     self.convert_btn,
                 ],
@@ -539,6 +569,7 @@ class ConverterApp:
         self.image_settings = self._build_image_settings()
         self.audio_settings = self._build_audio_settings()
         self.video_settings = self._build_video_settings()
+        self.system_settings = self._build_system_settings()
 
         return ft.Container(
             padding=20,
@@ -554,6 +585,7 @@ class ConverterApp:
                     self.image_settings,
                     self.audio_settings,
                     self.video_settings,
+                    self.system_settings,
                 ],
             ),
         )
@@ -565,6 +597,62 @@ class ConverterApp:
                 ft.Icon(icon, size=16, color=ft.Colors.SECONDARY),
                 ft.Text(title, size=14, weight=ft.FontWeight.W_500),
             ],
+        )
+
+    def _build_system_settings(self) -> ft.Container:
+        """Cross-cutting toggles that apply to every conversion."""
+        self.copy_metadata_switch = ft.Switch(
+            value=self.settings.copy_metadata,
+            on_change=self._on_copy_metadata_change,
+            scale=0.8,
+        )
+        self.low_priority_switch = ft.Switch(
+            value=self.settings.low_priority,
+            on_change=self._on_low_priority_change,
+            scale=0.8,
+        )
+        self.checksum_dropdown = ft.Dropdown(
+            label="Checksum после конвертации", value="off",
+            border_radius=12, filled=True,
+            options=[
+                ft.dropdown.Option("off",    "Не вычислять"),
+                ft.dropdown.Option("md5",    "MD5"),
+                ft.dropdown.Option("sha256", "SHA-256"),
+            ],
+            on_change=self._on_checksum_change,
+        )
+        return ft.Container(
+            padding=ft.padding.all(12),
+            border_radius=14,
+            bgcolor=ft.Colors.SURFACE,
+            content=ft.Column(
+                spacing=8,
+                controls=[
+                    self._section_header("Поведение", ft.Icons.SETTINGS_OUTLINED),
+                    self._row_with_help(
+                        ft.Row([
+                            ft.Text("Копировать метаданные", size=13, expand=True),
+                            self.copy_metadata_switch,
+                        ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        "Сохранить теги, обложки, GPS-метки и прочую служебную информацию из "
+                        "оригинального файла. Если копируете чужие файлы для публикации — "
+                        "лучше выключить.",
+                    ),
+                    self._row_with_help(
+                        ft.Row([
+                            ft.Text("Low Priority Mode", size=13, expand=True),
+                            self.low_priority_switch,
+                        ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        "Запускать ffmpeg с пониженным приоритетом — конвертация идёт чуть "
+                        "дольше, но компьютер не тормозит, можно играть/работать параллельно.",
+                    ),
+                    self._row_with_help(
+                        self.checksum_dropdown,
+                        "Хэш-сумма проверяет, что файл не побился при сохранении. MD5 — быстрее, "
+                        "SHA-256 — надёжнее. Сумма показывается в строке файла после готовности.",
+                    ),
+                ],
+            ),
         )
 
     def _build_image_settings(self) -> ft.Container:
@@ -777,6 +865,69 @@ class ConverterApp:
             on_change=self._on_resolution_change,
         )
 
+        # Hardware acceleration — only show vendors that ffmpeg actually supports.
+        hwaccel_opts = [ft.dropdown.Option("none", "CPU (libx264 / libx265 / SVT-AV1)")]
+        for codec in ("h264", "h265", "av1"):
+            for hw in detect_available_hwaccels(codec):
+                opt = ft.dropdown.Option(hw, {
+                    "nvenc": "NVIDIA NVENC",
+                    "qsv":   "Intel Quick Sync (QSV)",
+                    "amf":   "AMD AMF",
+                    "videotoolbox": "Apple VideoToolbox",
+                }.get(hw, hw))
+                if not any(o.key == hw for o in hwaccel_opts):
+                    hwaccel_opts.append(opt)
+        self.hwaccel_dropdown = ft.Dropdown(
+            label="Аппаратное ускорение", value="none",
+            border_radius=12, filled=True,
+            options=hwaccel_opts,
+            on_change=self._on_hwaccel_change,
+        )
+
+        # Trim
+        self.trim_start_field = ft.TextField(
+            label="С", hint_text="0:00", width=120,
+            on_change=self._on_trim_change,
+            border_radius=12, filled=True,
+        )
+        self.trim_end_field = ft.TextField(
+            label="До", hint_text="конец", width=120,
+            on_change=self._on_trim_change,
+            border_radius=12, filled=True,
+        )
+
+        # Watermark
+        self.watermark_text_field = ft.TextField(
+            label="Водяной знак (текст)", hint_text="например, @username",
+            on_change=self._on_watermark_text_change,
+            border_radius=12, filled=True,
+        )
+        self.watermark_position_dropdown = ft.Dropdown(
+            label="Положение", value="bottom-right",
+            border_radius=12, filled=True,
+            options=[
+                ft.dropdown.Option("top-left",     "Сверху-слева"),
+                ft.dropdown.Option("top-right",    "Сверху-справа"),
+                ft.dropdown.Option("bottom-left",  "Снизу-слева"),
+                ft.dropdown.Option("bottom-right", "Снизу-справа"),
+                ft.dropdown.Option("center",       "По центру"),
+            ],
+            on_change=self._on_watermark_position_change,
+        )
+        self.watermark_opacity_slider = ft.Slider(
+            min=0.1, max=1.0, value=0.7, divisions=18,
+            label="{value}",
+            on_change=self._on_watermark_opacity_change,
+        )
+
+        # Audio-track index — populated when we have a single video selected.
+        self.audio_track_dropdown = ft.Dropdown(
+            label="Аудиодорожка источника", value="default",
+            border_radius=12, filled=True,
+            options=[ft.dropdown.Option("default", "По умолчанию (первая)")],
+            on_change=self._on_audio_track_change,
+        )
+
         return ft.Container(
             visible=False,
             padding=ft.padding.all(12),
@@ -825,6 +976,45 @@ class ConverterApp:
                         "Разрешение по высоте; ширина считается с сохранением пропорций. "
                         "Уменьшение даёт сильное сокращение веса. Увеличение бессмысленно — "
                         "пиксели не появятся.",
+                    ),
+                    self._row_with_help(
+                        self.hwaccel_dropdown,
+                        "Аппаратное ускорение использует чипы видеокарты для кодирования "
+                        "видео. Это в 5–10 раз быстрее, чем CPU. NVENC — NVIDIA, QSV — Intel, "
+                        "AMF — AMD, VideoToolbox — Apple. Качество чуть ниже, чем у CPU при "
+                        "том же битрейте, но выигрыш в скорости огромен.",
+                    ),
+                    self._row_with_help(
+                        ft.Row([
+                            ft.Text("Обрезка", size=13, width=88),
+                            self.trim_start_field, ft.Text("—", size=14), self.trim_end_field,
+                        ], vertical_alignment=ft.CrossAxisAlignment.CENTER, spacing=6),
+                        "Время начала и конца в формате M:SS или H:MM:SS (например 1:30 или "
+                        "0:1:30). Оставьте поля пустыми, чтобы конвертировать целиком. "
+                        "Полезно вырезать рекламу или нужный кусок без видеоредактора.",
+                    ),
+                    self._row_with_help(
+                        self.watermark_text_field,
+                        "Текст-водяной знак на видео. Если пусто — водяного знака не будет.",
+                    ),
+                    self._row_with_help(
+                        self.watermark_position_dropdown,
+                        "Угол, в который попадёт водяной знак. Не используется, если "
+                        "поле текста пустое.",
+                    ),
+                    self._row_with_help(
+                        ft.Row([
+                            ft.Text("Прозрачность", size=13, width=88),
+                            ft.Container(expand=True, content=self.watermark_opacity_slider),
+                        ], vertical_alignment=ft.CrossAxisAlignment.CENTER),
+                        "Насколько водяной знак прозрачен. 1.0 — полностью непрозрачный, "
+                        "0.3 — еле виден.",
+                    ),
+                    self._row_with_help(
+                        self.audio_track_dropdown,
+                        "Если в видео несколько звуковых дорожек (разные языки, комментарии), "
+                        "выберите какую сохранить. Список заполняется автоматически после того, "
+                        "как вы кликнули файл в очереди.",
                     ),
                 ],
             ),
@@ -1129,6 +1319,16 @@ class ConverterApp:
         self.video_fps_dropdown.value = str(s.video_fps) if s.video_fps else "auto"
         self.video_resolution_dropdown.value = str(s.video_height) if s.video_height else "auto"
         self.codec_dropdown.value = s.audio_codec_for_video or "auto"
+        # Hardware accel + trim + watermark + system
+        self.hwaccel_dropdown.value = s.hwaccel or "none"
+        self.trim_start_field.value = "" if s.trim_start_s is None else str(s.trim_start_s)
+        self.trim_end_field.value = "" if s.trim_end_s is None else str(s.trim_end_s)
+        self.watermark_text_field.value = s.watermark_text or ""
+        self.watermark_position_dropdown.value = s.watermark_position
+        self.watermark_opacity_slider.value = s.watermark_opacity
+        self.copy_metadata_switch.value = s.copy_metadata
+        self.low_priority_switch.value = s.low_priority
+        self.checksum_dropdown.value = s.compute_checksum or "off"
 
     # Image
     def _on_image_quality_change(self, e) -> None:
@@ -1208,6 +1408,56 @@ class ConverterApp:
         v = e.control.value
         self.settings.video_height = None if v == "auto" else int(v)
         self._refresh_estimated_sizes()
+
+    # Hardware acceleration / trim / watermark / audio-track / system
+    def _on_hwaccel_change(self, e) -> None:
+        v = e.control.value
+        self.settings.hwaccel = None if v == "none" else v
+
+    @staticmethod
+    def _parse_time(s: str) -> float | None:
+        s = (s or "").strip()
+        if not s:
+            return None
+        try:
+            parts = [float(p) for p in s.split(":")]
+        except ValueError:
+            return None
+        if len(parts) == 1:
+            return parts[0]
+        if len(parts) == 2:
+            return parts[0] * 60 + parts[1]
+        if len(parts) == 3:
+            return parts[0] * 3600 + parts[1] * 60 + parts[2]
+        return None
+
+    def _on_trim_change(self, _e) -> None:
+        self.settings.trim_start_s = self._parse_time(self.trim_start_field.value)
+        self.settings.trim_end_s = self._parse_time(self.trim_end_field.value)
+
+    def _on_watermark_text_change(self, e) -> None:
+        v = (e.control.value or "").strip()
+        self.settings.watermark_text = v or None
+
+    def _on_watermark_position_change(self, e) -> None:
+        self.settings.watermark_position = e.control.value
+
+    def _on_watermark_opacity_change(self, e) -> None:
+        self.settings.watermark_opacity = float(e.control.value)
+
+    def _on_audio_track_change(self, e) -> None:
+        v = e.control.value
+        self.settings.audio_track_index = None if v == "default" else int(v)
+
+    def _on_copy_metadata_change(self, e) -> None:
+        self.settings.copy_metadata = bool(e.control.value)
+
+    def _on_low_priority_change(self, e) -> None:
+        self.settings.low_priority = bool(e.control.value)
+
+    def _on_checksum_change(self, e) -> None:
+        v = e.control.value
+        self.settings.compute_checksum = None if v == "off" else v
 
     def _iter_chips(self):
         # walk format_card to find chips
@@ -1409,6 +1659,9 @@ class ConverterApp:
         subtitle_text = f"{KIND_LABEL.get(kind, 'Файл')} · {item.path.suffix.lstrip('.').upper()} · {size}"
         if item.estimated_size and item.status == "pending":
             subtitle_text += f" → ~{human_size(item.estimated_size)}"
+        if item.checksum:
+            algo = (self.settings.compute_checksum or "sum").upper()
+            subtitle_text += f" · {algo} {item.checksum[:10]}…"
         if item.status == "error" and item.message:
             subtitle_text = item.message
 
@@ -1529,6 +1782,9 @@ class ConverterApp:
             self.preview_image.visible = False
             self.preview_placeholder.visible = False
             self._mount_video(item.path)
+            # Probe audio tracks in the background — populate the track dropdown.
+            threading.Thread(target=self._populate_audio_tracks, args=(item.path,),
+                             daemon=True).start()
         else:
             self._clear_preview()
 
@@ -1790,6 +2046,62 @@ class ConverterApp:
                 subprocess.Popen(["xdg-open", str(path)])
         except Exception as exc:
             self._toast(f"Не удалось открыть файл: {exc}", error=True)
+
+    # ----- Pause / Resume + Compact mode --------------------------------
+    def _toggle_pause(self, _e=None) -> None:
+        if not self.running or self._current_proc is None:
+            return
+        if not PSUTIL_AVAILABLE:
+            self._toast("Установите psutil, чтобы использовать паузу.", error=True)
+            return
+        try:
+            p = psutil.Process(self._current_proc.pid)
+            if self._is_paused:
+                p.resume()
+                self._is_paused = False
+                self.pause_btn.icon = ft.Icons.PAUSE_ROUNDED
+                self.pause_btn.tooltip = "Приостановить конвертацию"
+            else:
+                p.suspend()
+                self._is_paused = True
+                self.pause_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED
+                self.pause_btn.tooltip = "Возобновить конвертацию"
+            self.page.update()
+        except (psutil.NoSuchProcess, psutil.AccessDenied) as exc:
+            self._toast(f"Не удалось переключить паузу: {exc}", error=True)
+
+    def _toggle_compact(self, _e=None) -> None:
+        """Collapse the window down to just the progress + buttons row."""
+        self._is_compact = not self._is_compact
+        # Toggle visibility of bulky areas. We keep the action bar visible.
+        try:
+            self.drop_card.visible = not self._is_compact
+            self.preset_card.visible = not self._is_compact
+            self.format_card.visible = not self._is_compact
+            self.settings_card.visible = not self._is_compact
+            self.output_card.visible = not self._is_compact
+            self.preview_card.visible = not self._is_compact
+            # Hide the queue too — stays compact.
+            for child in self.page.controls:
+                pass
+        except AttributeError:
+            pass
+        try:
+            if self._is_compact:
+                self.page.window_width = 540
+                self.page.window_height = 200
+                self.page.window_always_on_top = True
+                self.compact_btn.icon = ft.Icons.OPEN_IN_FULL_ROUNDED
+                self.compact_btn.tooltip = "Развернуть"
+            else:
+                self.page.window_width = 1100
+                self.page.window_height = 740
+                self.page.window_always_on_top = False
+                self.compact_btn.icon = ft.Icons.PICTURE_IN_PICTURE_ALT_OUTLINED
+                self.compact_btn.tooltip = "Компактный режим"
+        except Exception:
+            pass
+        self.page.update()
 
     # ----- log + notify -------------------------------------------------
     def _log(self, line: str) -> None:
@@ -2060,6 +2372,16 @@ class ConverterApp:
         ok_count = 0
         skipped_count = 0
         last_dst: Path | None = None
+
+        # Show pause button as long as we're working.
+        self.pause_btn.visible = True
+
+        # Special case: all images + target is PDF → produce ONE multi-page PDF.
+        if (self.target_ext == "pdf"
+                and all(it.kind == "image" for it in self.files)
+                and len(self.files) > 1):
+            return self._run_pdf_combine()
+
         for idx, item in enumerate(self.files, start=1):
             item.status = "running"
             self._current_duration_s = item.duration_s
@@ -2084,19 +2406,33 @@ class ConverterApp:
                     on_log=self._log,
                     on_progress=self._on_item_progress,
                     duration_s=item.duration_s or None,
+                    on_proc=self._capture_proc,
                 )
                 item.status = "ok"
                 item.message = str(dst)
                 item.dst = dst
                 ok_count += 1
                 last_dst = dst
+                # Optional checksum after successful save.
+                if self.settings.compute_checksum:
+                    try:
+                        item.checksum = file_checksum(dst, self.settings.compute_checksum)
+                        self._log(f"{self.settings.compute_checksum.upper()} {dst.name}: {item.checksum}")
+                    except Exception as e:
+                        self._log(f"checksum failed: {e}")
             except Exception as e:
                 item.status = "error"
                 item.message = str(e)
                 self._log(f"ERROR: {e}")
+            finally:
+                self._current_proc = None
+                self._is_paused = False
+                self.pause_btn.icon = ft.Icons.PAUSE_ROUNDED
             self._completed_duration_s += item.duration_s
             self._per_item_progress = 1.0
             self._safe_update()
+
+        self.pause_btn.visible = False
 
         self._eta_stop.set()
         if last_dst is not None:
@@ -2170,6 +2506,61 @@ class ConverterApp:
         if h:
             return f"{h}:{m:02d}:{s:02d}"
         return f"{m}:{s:02d}"
+
+    def _capture_proc(self, proc) -> None:
+        """Called by converter when a new ffmpeg subprocess starts."""
+        self._current_proc = proc
+
+    def _populate_audio_tracks(self, path: Path) -> None:
+        """Re-fill the audio-track dropdown with what's inside this video."""
+        streams = [s for s in probe_streams(path) if s.kind == "audio"]
+        opts = [ft.dropdown.Option("default", "По умолчанию (первая)")]
+        for s in streams:
+            opts.append(ft.dropdown.Option(str(s.index), f"#{s.index} · {s.label}"))
+        self.audio_track_dropdown.options = opts
+        # Reset to default when switching files.
+        self.audio_track_dropdown.value = "default"
+        self.settings.audio_track_index = None
+        try:
+            self.audio_track_dropdown.update()
+        except Exception:
+            pass
+
+    def _run_pdf_combine(self) -> None:
+        """Combine all queued images into a single multi-page PDF document."""
+        out_dir = self.out_dir or self.files[0].path.parent
+        dst = out_dir / "combined.pdf"
+        i = 1
+        while dst.exists():
+            dst = out_dir / f"combined_{i}.pdf"
+            i += 1
+        try:
+            for item in self.files:
+                item.status = "running"
+            self._safe_update()
+            images_to_pdf([f.path for f in self.files], dst, self.settings)
+            for item in self.files:
+                item.status = "ok"
+                item.message = str(dst)
+                item.dst = dst
+            self._log(f"PDF собран: {dst}")
+            self.last_output_folder = dst.parent
+            self.open_output_btn.visible = True
+        except Exception as e:
+            for item in self.files:
+                item.status = "error"
+                item.message = str(e)
+            self._log(f"PDF ERROR: {e}")
+        finally:
+            self._eta_stop.set()
+            self.pause_btn.visible = False
+            self.progress.value = 1.0
+            self.status_text.value = f"PDF: {dst.name}"
+            self.eta_text.value = ""
+            self.running = False
+            self.convert_btn.disabled = False
+            self._safe_update()
+            self._notify_complete(len(self.files), len(self.files))
 
     def _safe_update(self) -> None:
         try:
