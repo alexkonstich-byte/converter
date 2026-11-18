@@ -7,6 +7,7 @@ hidden can silently affect a conversion.
 """
 from __future__ import annotations
 
+from i18n import tr
 from typing import TYPE_CHECKING, Optional
 
 import flet as ft
@@ -116,39 +117,39 @@ class SettingsPanel:
         )
         self.img_quality_text = label(f"{self.s.image_quality}", style=ft.TextThemeStyle.LABEL_LARGE,
                                       color=ft.Colors.PRIMARY, width=32, text_align=ft.TextAlign.END)
-        self.img_w = ft.TextField(label="Ширина", suffix="px", dense=True, expand=True,
+        self.img_w = ft.TextField(label=tr("Ширина"), suffix="px", dense=True, expand=True,
                                   input_filter=ft.NumbersOnlyInputFilter(),
                                   border_radius=SHAPE_SMALL, on_change=self._on_resize)
-        self.img_h = ft.TextField(label="Высота", suffix="px", dense=True, expand=True,
+        self.img_h = ft.TextField(label=tr("Высота"), suffix="px", dense=True, expand=True,
                                   input_filter=ft.NumbersOnlyInputFilter(),
                                   border_radius=SHAPE_SMALL, on_change=self._on_resize)
         aspect_row, self.img_keep_aspect = switch_row(
-            "Сохранять пропорции", self.s.image_keep_aspect, self._on_keep_aspect)
+            tr("Сохранять пропорции"), self.s.image_keep_aspect, self._on_keep_aspect)
         exif_row, self.img_strip_exif = switch_row(
-            "Удалить EXIF", self.s.image_strip_exif, self._on_strip_exif,
+            tr("Удалить EXIF"), self.s.image_strip_exif, self._on_strip_exif,
             "EXIF",
-            "Невидимые метаданные камеры: модель, GPS-координаты, дата съёмки. "
-            "Удаление защищает приватность при публикации.",
+            tr("Невидимые метаданные камеры: модель, GPS-координаты, дата съёмки. "
+            "Удаление защищает приватность при публикации."),
         )
         return section(
-            "Изображения", ft.Icons.IMAGE_OUTLINED,
+            tr("Изображения"), ft.Icons.IMAGE_OUTLINED,
             with_help(
                 ft.Column(spacing=0, controls=[
-                    label("Качество (JPEG, WebP, AVIF)"),
+                    label(tr("Качество (JPEG, WebP, AVIF)")),
                     ft.Row([self.img_quality, self.img_quality_text],
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ]),
-                "Качество",
-                "Шкала 1–100. Для JPEG 80–90 — золотая середина: на глаз почти не "
+                tr("Качество"),
+                tr("Шкала 1–100. Для JPEG 80–90 — золотая середина: на глаз почти не "
                 "отличить от 100, а файл вдвое легче. PNG сжимается без потерь — "
-                "там настройка не используется.",
+                "там настройка не используется."),
             ),
             with_help(
                 ft.Row([self.img_w, ft.Text("×"), self.img_h],
                        vertical_alignment=ft.CrossAxisAlignment.CENTER),
-                "Размер",
-                "Можно указать только ширину или только высоту — вторая сторона "
-                "посчитается с сохранением пропорций. Пусто — размер не меняется.",
+                tr("Размер"),
+                tr("Можно указать только ширину или только высоту — вторая сторона "
+                "посчитается с сохранением пропорций. Пусто — размер не меняется."),
             ),
             aspect_row,
             exif_row,
@@ -175,48 +176,48 @@ class SettingsPanel:
     # ------------------------------------------------------------- audio
     def _build_audio(self) -> ft.Container:
         self.aud_bitrate = dropdown(
-            "Битрейт", "auto",
-            [("auto", "Авто"), ("96", "96 kbps"), ("128", "128 kbps"), ("192", "192 kbps"),
+            tr("Битрейт"), "auto",
+            [("auto", tr("Авто")), ("96", "96 kbps"), ("128", "128 kbps"), ("192", "192 kbps"),
              ("256", "256 kbps"), ("320", "320 kbps")],
             self._on_audio_bitrate,
         )
         self.aud_rate = dropdown(
-            "Частота", "auto",
-            [("auto", "Авто"), ("44100", "44.1 кГц · CD"), ("48000", "48 кГц · видео"),
-             ("96000", "96 кГц · студия")],
+            tr("Частота"), "auto",
+            [("auto", tr("Авто")), ("44100", tr("44.1 кГц · CD")), ("48000", tr("48 кГц · видео")),
+             ("96000", tr("96 кГц · студия"))],
             self._on_sample_rate,
         )
         self.aud_channels = dropdown(
-            "Каналы", "auto",
-            [("auto", "Авто"), ("1", "Моно"), ("2", "Стерео"), ("6", "5.1")],
+            tr("Каналы"), "auto",
+            [("auto", tr("Авто")), ("1", tr("Моно")), ("2", tr("Стерео")), ("6", "5.1")],
             self._on_channels,
         )
         return section(
-            "Звук", ft.Icons.GRAPHIC_EQ_ROUNDED,
-            with_help(self.aud_bitrate, "Битрейт",
-                      "Сколько данных в секунду. Больше — чище звук и тяжелее файл. "
+            tr("Звук"), ft.Icons.GRAPHIC_EQ_ROUNDED,
+            with_help(self.aud_bitrate, tr("Битрейт"),
+                      tr("Сколько данных в секунду. Больше — чище звук и тяжелее файл. "
                       "MP3 — от 192 kbps, AAC хватает 192. FLAC/WAV — без потерь, "
-                      "настройка игнорируется."),
-            with_help(self.aud_rate, "Частота дискретизации",
-                      "44.1 кГц — стандарт музыки и CD, 48 кГц — стандарт видео. "
-                      "Выше — только если точно знаете зачем."),
-            with_help(self.aud_channels, "Каналы",
-                      "Моно — 1, стерео — 2, 5.1 — 6. «Авто» сохраняет как в оригинале."),
+                      "настройка игнорируется.")),
+            with_help(self.aud_rate, tr("Частота дискретизации"),
+                      tr("44.1 кГц — стандарт музыки и CD, 48 кГц — стандарт видео. "
+                      "Выше — только если точно знаете зачем.")),
+            with_help(self.aud_channels, tr("Каналы"),
+                      tr("Моно — 1, стерео — 2, 5.1 — 6. «Авто» сохраняет как в оригинале.")),
             self._build_audio_size(),
             visible=False,
         )
 
     def _build_audio_size(self) -> ft.Row:
         self.aud_size = ft.TextField(
-            label="Уложить в размер", suffix="МБ", hint_text="не ограничивать", dense=True,
+            label=tr("Уложить в размер"), suffix=tr("МБ"), hint_text=tr("не ограничивать"), dense=True,
             input_filter=ft.InputFilter(regex_string=r"^[0-9]*[.,]?[0-9]*$"),
             border_radius=SHAPE_SMALL, on_change=self._on_size,
             prefix_icon=ft.Icons.SAVE_ALT_ROUNDED,
         )
         self.aud_size_row = with_help(
-            self.aud_size, "Уложить в размер",
-            "Битрейт подберётся по длительности так, чтобы файл получился не больше "
-            "указанного. Удобно для лимитов мессенджеров и почты.")
+            self.aud_size, tr("Уложить в размер"),
+            tr("Битрейт подберётся по длительности так, чтобы файл получился не больше "
+            "указанного. Удобно для лимитов мессенджеров и почты."))
         return self.aud_size_row
 
     def _on_size(self, e) -> None:
@@ -245,24 +246,24 @@ class SettingsPanel:
     # ------------------------------------------------------------- video
     def _build_video(self) -> ft.Container:
         self.vid_codec = dropdown(
-            "Видеокодек", "auto",
-            [("auto", "Авто"), ("h264", "H.264 · везде играет"),
-             ("h265", "H.265 / HEVC · компактнее"), ("av1", "AV1 · новейший")],
+            tr("Видеокодек"), "auto",
+            [("auto", tr("Авто")), ("h264", tr("H.264 · везде играет")),
+             ("h265", tr("H.265 / HEVC · компактнее")), ("av1", tr("AV1 · новейший"))],
             self._on_video_codec,
         )
         self.vid_audio_codec = dropdown(
-            "Звук в видео", "auto",
-            [("auto", "Авто"), ("aac", "AAC"), ("mp3", "MP3"), ("opus", "Opus"),
+            tr("Звук в видео"), "auto",
+            [("auto", tr("Авто")), ("aac", "AAC"), ("mp3", "MP3"), ("opus", "Opus"),
              ("vorbis", "Vorbis"), ("flac", "FLAC"), ("ac3", "AC-3"),
-             ("copy", "Без перекодирования")],
+             ("copy", tr("Без перекодирования"))],
             self._on_video_audio_codec,
         )
         self.vid_mode = ft.SegmentedButton(
             selected=[self.s.video_bitrate_mode],
             segments=[
-                ft.Segment(value="crf", label="Качество", icon=ft.Icons.HIGH_QUALITY_OUTLINED),
-                ft.Segment(value="cbr", label="Битрейт", icon=ft.Icons.SPEED_ROUNDED),
-                ft.Segment(value="size", label="Размер", icon=ft.Icons.SAVE_ALT_ROUNDED),
+                ft.Segment(value="crf", label=tr("Качество"), icon=ft.Icons.HIGH_QUALITY_OUTLINED),
+                ft.Segment(value="cbr", label=tr("Битрейт"), icon=ft.Icons.SPEED_ROUNDED),
+                ft.Segment(value="size", label=tr("Размер"), icon=ft.Icons.SAVE_ALT_ROUNDED),
             ],
             on_change=self._on_video_mode,
         )
@@ -275,56 +276,56 @@ class SettingsPanel:
         self.vid_crf_row = with_help(
             ft.Row([self.vid_crf, self.vid_crf_text], vertical_alignment=ft.CrossAxisAlignment.CENTER),
             "CRF",
-            "Constant Rate Factor: меньше число — выше качество и больше файл. "
+            tr("Constant Rate Factor: меньше число — выше качество и больше файл. "
             "18 — почти без потерь, 23 — стандарт, 28 — заметное сжатие. "
-            "−6 пунктов ≈ ×2 к размеру.",
+            "−6 пунктов ≈ ×2 к размеру."),
         )
         self.vid_bitrate = ft.TextField(
-            label="Битрейт", suffix="Мбит/с", value="8", dense=True,
+            label=tr("Битрейт"), suffix=tr("Мбит/с"), value="8", dense=True,
             input_filter=ft.InputFilter(regex_string=r"^[0-9]*[.,]?[0-9]*$"),
             border_radius=SHAPE_SMALL, on_change=self._on_video_bitrate,
         )
         self.vid_bitrate_row = with_help(
-            self.vid_bitrate, "Битрейт видео",
-            "Для Full HD: 5–8 Мбит/с — веб, 12–20 — высокое качество, 35+ — мастер-копия. "
-            "Для 4K умножьте на 4.",
+            self.vid_bitrate, tr("Битрейт видео"),
+            tr("Для Full HD: 5–8 Мбит/с — веб, 12–20 — высокое качество, 35+ — мастер-копия. "
+            "Для 4K умножьте на 4."),
         )
         self.vid_bitrate_row.visible = False
         self.vid_size = ft.TextField(
-            label="Итоговый размер", suffix="МБ", hint_text="например, 25", dense=True,
+            label=tr("Итоговый размер"), suffix=tr("МБ"), hint_text=tr("например, 25"), dense=True,
             input_filter=ft.InputFilter(regex_string=r"^[0-9]*[.,]?[0-9]*$"),
             border_radius=SHAPE_SMALL, on_change=self._on_size,
         )
         self.vid_size_row = with_help(
-            self.vid_size, "Итоговый размер",
-            "Видеобитрейт рассчитается из длительности, чтобы файл влез в лимит: "
+            self.vid_size, tr("Итоговый размер"),
+            tr("Видеобитрейт рассчитается из длительности, чтобы файл влез в лимит: "
             "Telegram, Discord (25 МБ), почта. Чем меньше размер и длиннее видео, "
-            "тем ниже качество.")
+            "тем ниже качество."))
         self.vid_size_row.visible = False
         self.vid_res = dropdown(
-            "Разрешение", "auto",
-            [("auto", "Как в оригинале"), ("480", "480p"), ("720", "720p · HD"),
+            tr("Разрешение"), "auto",
+            [("auto", tr("Как в оригинале")), ("480", "480p"), ("720", "720p · HD"),
              ("1080", "1080p · Full HD"), ("1440", "1440p · 2K"), ("2160", "2160p · 4K")],
             self._on_resolution,
         )
         self.vid_aspect = dropdown(
-            "Кадрирование", "auto",
-            [("auto", "Без обрезки"), ("16:9", "16:9 · горизонталь"),
-             ("9:16", "9:16 · вертикаль"), ("1:1", "1:1 · квадрат"), ("4:5", "4:5 · пост")],
+            tr("Кадрирование"), "auto",
+            [("auto", tr("Без обрезки")), ("16:9", tr("16:9 · горизонталь")),
+             ("9:16", tr("9:16 · вертикаль")), ("1:1", tr("1:1 · квадрат")), ("4:5", tr("4:5 · пост"))],
             self._on_aspect,
         )
         self.vid_fps = dropdown(
-            "Частота кадров", "auto",
-            [("auto", "Как в оригинале"), ("24", "24 · кино"), ("30", "30 · стандарт"),
-             ("60", "60 · плавно")],
+            tr("Частота кадров"), "auto",
+            [("auto", tr("Как в оригинале")), ("24", tr("24 · кино")), ("30", tr("30 · стандарт")),
+             ("60", tr("60 · плавно"))],
             self._on_fps,
         )
-        hw_opts = [("none", "Процессор (CPU)")]
+        hw_opts = [("none", tr("Процессор (CPU)"))]
         for codec in ("h264", "h265", "av1"):
             for hw in detect_available_hwaccels(codec):
                 if all(k != hw for k, _ in hw_opts):
                     hw_opts.append((hw, HW_LABELS.get(hw, hw)))
-        self.vid_hw = dropdown("Кодирование", "none", hw_opts, self._on_hwaccel,
+        self.vid_hw = dropdown(tr("Кодирование"), "none", hw_opts, self._on_hwaccel,
                                disabled=len(hw_opts) == 1)
         self.vid_compat = ft.Container(
             visible=False,
@@ -338,22 +339,22 @@ class SettingsPanel:
             ]),
         )
         self.vid_codec_row = with_help(
-            self.vid_codec, "Видеокодек",
-            "H.264 играет на любом устройстве. H.265 даёт ту же картинку при "
+            self.vid_codec, tr("Видеокодек"),
+            tr("H.264 играет на любом устройстве. H.265 даёт ту же картинку при "
             "меньшем размере. AV1 — ещё компактнее, но кодируется дольше всех. "
-            "Для .webm подходит только AV1.")
+            "Для .webm подходит только AV1."))
         self.vid_audio_codec_row = with_help(
-            self.vid_audio_codec, "Звук в видео",
-            "«Авто» подбирает кодек под контейнер. Если выбрать несовместимый, "
-            "приложение предупредит заранее.")
+            self.vid_audio_codec, tr("Звук в видео"),
+            tr("«Авто» подбирает кодек под контейнер. Если выбрать несовместимый, "
+            "приложение предупредит заранее."))
         self.vid_mode_row = ft.Row([self.vid_mode])
         self.vid_hw_row = with_help(
-            self.vid_hw, "Аппаратное кодирование",
-            "Видеокарта кодирует в 5–10 раз быстрее процессора, качество при "
+            self.vid_hw, tr("Аппаратное кодирование"),
+            tr("Видеокарта кодирует в 5–10 раз быстрее процессора, качество при "
             "том же битрейте чуть ниже. В списке только то, что поддерживает "
-            "ваш ffmpeg.")
+            "ваш ffmpeg."))
         return section(
-            "Видео", ft.Icons.MOVIE_OUTLINED,
+            tr("Видео"), ft.Icons.MOVIE_OUTLINED,
             self.vid_codec_row,
             self.vid_audio_codec_row,
             self.vid_compat,
@@ -361,15 +362,15 @@ class SettingsPanel:
             self.vid_crf_row,
             self.vid_bitrate_row,
             self.vid_size_row,
-            with_help(self.vid_res, "Разрешение",
-                      "Высота кадра; ширина считается автоматически. Уменьшение сильно "
-                      "экономит место, увеличение бессмысленно."),
-            with_help(self.vid_aspect, "Кадрирование",
-                      "Обрезает кадр по центру до нужных пропорций — например, делает "
-                      "вертикальное видео 9:16 для сторис из горизонтального."),
-            with_help(self.vid_fps, "Частота кадров",
-                      "24 — киношно, 30 — стандарт, 60 — плавно. Повышение fps размер "
-                      "не уменьшает: кадры просто дублируются."),
+            with_help(self.vid_res, tr("Разрешение"),
+                      tr("Высота кадра; ширина считается автоматически. Уменьшение сильно "
+                      "экономит место, увеличение бессмысленно.")),
+            with_help(self.vid_aspect, tr("Кадрирование"),
+                      tr("Обрезает кадр по центру до нужных пропорций — например, делает "
+                      "вертикальное видео 9:16 для сторис из горизонтального.")),
+            with_help(self.vid_fps, tr("Частота кадров"),
+                      tr("24 — киношно, 30 — стандарт, 60 — плавно. Повышение fps размер "
+                      "не уменьшает: кадры просто дублируются.")),
             self.vid_hw_row,
             visible=False,
         )
@@ -463,26 +464,26 @@ class SettingsPanel:
             on_change=self._on_rotate,
         )
         self.rotate_row = with_help(
-            ft.Row([self.rotate]), "Поворот",
-            "Поворот по часовой стрелке. Пригодится для видео, снятого боком на телефон.")
+            ft.Row([self.rotate]), tr("Поворот"),
+            tr("Поворот по часовой стрелке. Пригодится для видео, снятого боком на телефон."))
         self.flip_h_row, self.flip_h = switch_row(
-            "Отразить по горизонтали", self.s.flip_horizontal,
+            tr("Отразить по горизонтали"), self.s.flip_horizontal,
             lambda e: self._set("flip_horizontal", bool(e.control.value), False))
         self.flip_v_row, self.flip_v = switch_row(
-            "Отразить по вертикали", self.s.flip_vertical,
+            tr("Отразить по вертикали"), self.s.flip_vertical,
             lambda e: self._set("flip_vertical", bool(e.control.value), False))
         self.mute_row, self.mute = switch_row(
-            "Убрать звук", self.s.video_mute,
+            tr("Убрать звук"), self.s.video_mute,
             lambda e: self._set("video_mute", bool(e.control.value)),
-            "Убрать звук", "В результате останется только картинка.")
+            tr("Убрать звук"), tr("В результате останется только картинка."))
         self.norm_row, self.normalize = switch_row(
-            "Выровнять громкость", self.s.audio_normalize,
+            tr("Выровнять громкость"), self.s.audio_normalize,
             lambda e: self._set("audio_normalize", bool(e.control.value), False),
-            "Нормализация громкости",
-            "Приводит громкость к стандарту −16 LUFS (как у стримингов): тихие записи "
-            "станут громче, громкие — тише, без искажений.")
+            tr("Нормализация громкости"),
+            tr("Приводит громкость к стандарту −16 LUFS (как у стримингов): тихие записи "
+            "станут громче, громкие — тише, без искажений."))
         return section(
-            "Поворот и звук", ft.Icons.TUNE_ROUNDED,
+            tr("Поворот и звук"), ft.Icons.TUNE_ROUNDED,
             self.rotate_row, self.flip_h_row, self.flip_v_row, self.mute_row, self.norm_row,
             visible=False,
         )
@@ -498,13 +499,13 @@ class SettingsPanel:
     # --------------------------------------------------------- subtitles
     def _build_subtitles(self) -> ft.Container:
         self.sub_mode = dropdown(
-            "Режим", "none",
-            [("none", "Не трогать"), ("burn_file", "Вшить из файла в картинку"),
-             ("soft_file", "Добавить из файла отдельной дорожкой"),
-             ("burn_track", "Вшить встроенные субтитры видео")],
+            tr("Режим"), "none",
+            [("none", tr("Не трогать")), ("burn_file", tr("Вшить из файла в картинку")),
+             ("soft_file", tr("Добавить из файла отдельной дорожкой")),
+             ("burn_track", tr("Вшить встроенные субтитры видео"))],
             self._on_sub_mode,
         )
-        self.sub_file_text = label("Файл не выбран", style=ft.TextThemeStyle.BODY_MEDIUM,
+        self.sub_file_text = label(tr("Файл не выбран"), style=ft.TextThemeStyle.BODY_MEDIUM,
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
         self.sub_file_row = ft.Container(
             visible=False,
@@ -516,20 +517,20 @@ class SettingsPanel:
                 controls=[
                     ft.Icon(ft.Icons.SUBTITLES_OUTLINED, color=ft.Colors.PRIMARY),
                     self.sub_file_text,
-                    ft.TextButton("Выбрать", on_click=lambda _e: self.app.page.run_task(
+                    ft.TextButton(tr("Выбрать"), on_click=lambda _e: self.app.page.run_task(
                         self.app.pick_subtitle_file)),
                 ],
             ),
         )
         self.sub_track_hint = label(
-            "Какую дорожку вшить, можно выбрать в предпросмотре видео.", visible=False)
+            tr("Какую дорожку вшить, можно выбрать в предпросмотре видео."), visible=False)
         return section(
-            "Субтитры", ft.Icons.SUBTITLES_OUTLINED,
-            with_help(self.sub_mode, "Субтитры",
-                      "«Вшить» — текст становится частью картинки и виден везде. "
+            tr("Субтитры"), ft.Icons.SUBTITLES_OUTLINED,
+            with_help(self.sub_mode, tr("Субтитры"),
+                      tr("«Вшить» — текст становится частью картинки и виден везде. "
                       "«Отдельной дорожкой» — субтитры можно включать и выключать в плеере "
                       "(MKV, MP4, MOV, WebM). Чтобы просто вытащить субтитры из видео, "
-                      "выберите формат SRT, ASS или VTT."),
+                      "выберите формат SRT, ASS или VTT.")),
             self.sub_file_row,
             self.sub_track_hint,
             visible=False,
@@ -546,7 +547,7 @@ class SettingsPanel:
         self.sub_file_row.visible = mode in ("burn_file", "soft_file")
         self.sub_track_hint.visible = mode == "burn_track"
         f = self.s.subtitle_file
-        self.sub_file_text.value = f.replace("\\", "/").rsplit("/", 1)[-1] if f else "Файл не выбран"
+        self.sub_file_text.value = f.replace("\\", "/").rsplit("/", 1)[-1] if f else tr("Файл не выбран")
 
     def set_subtitle_file(self, path: str) -> None:
         self.s.subtitle_file = path
@@ -555,24 +556,24 @@ class SettingsPanel:
     # -------------------------------------------------------------- trim
     def _build_trim(self) -> ft.Container:
         self.trim_start = ft.TextField(
-            label="Начало", hint_text="0:00", dense=True, expand=True,
+            label=tr("Начало"), hint_text="0:00", dense=True, expand=True,
             border_radius=SHAPE_SMALL, on_change=self._on_trim,
             prefix_icon=ft.Icons.START_ROUNDED,
         )
         self.trim_end = ft.TextField(
-            label="Конец", hint_text="до конца", dense=True, expand=True,
+            label=tr("Конец"), hint_text=tr("до конца"), dense=True, expand=True,
             border_radius=SHAPE_SMALL, on_change=self._on_trim,
             prefix_icon=ft.Icons.KEYBOARD_TAB_ROUNDED,
         )
         return section(
-            "Обрезка", ft.Icons.CONTENT_CUT_ROUNDED,
+            tr("Обрезка"), ft.Icons.CONTENT_CUT_ROUNDED,
             with_help(
                 ft.Row([self.trim_start, self.trim_end], spacing=8),
-                "Обрезка",
-                "Время в формате 90, 1:30 или 1:02:30. Пустое поле — от начала / до "
-                "конца. Удобно вырезать нужный кусок без видеоредактора.",
+                tr("Обрезка"),
+                tr("Время в формате 90, 1:30 или 1:02:30. Пустое поле — от начала / до "
+                "конца. Удобно вырезать нужный кусок без видеоредактора."),
             ),
-            subtitle="Сохранить только фрагмент",
+            subtitle=tr("Сохранить только фрагмент"),
             visible=False,
         )
 
@@ -581,11 +582,11 @@ class SettingsPanel:
         end = parse_time(self.trim_end.value)
         bad_start = bool(self.trim_start.value.strip()) and start is None
         bad_end = bool(self.trim_end.value.strip()) and end is None
-        self.trim_start.error = "Формат 1:30" if bad_start else None
+        self.trim_start.error = tr("Формат 1:30") if bad_start else None
         if bad_end:
-            self.trim_end.error = "Формат 1:30"
+            self.trim_end.error = tr("Формат 1:30")
         elif start is not None and end is not None and end <= start:
-            self.trim_end.error = "Должен быть позже начала"
+            self.trim_end.error = tr("Должен быть позже начала")
         else:
             self.trim_end.error = None
         self.s.trim_start_s = start
@@ -595,15 +596,15 @@ class SettingsPanel:
     # --------------------------------------------------------- watermark
     def _build_watermark(self) -> ft.Container:
         self.wm_text = ft.TextField(
-            label="Текст", hint_text="например, @username", dense=True,
+            label=tr("Текст"), hint_text=tr("например, @username"), dense=True,
             border_radius=SHAPE_SMALL, on_change=self._on_wm_text,
             prefix_icon=ft.Icons.TEXT_FIELDS_ROUNDED,
         )
         self.wm_position = dropdown(
-            "Положение", self.s.watermark_position,
-            [("top-left", "Сверху слева"), ("top-right", "Сверху справа"),
-             ("bottom-left", "Снизу слева"), ("bottom-right", "Снизу справа"),
-             ("center", "По центру")],
+            tr("Положение"), self.s.watermark_position,
+            [("top-left", tr("Сверху слева")), ("top-right", tr("Сверху справа")),
+             ("bottom-left", tr("Снизу слева")), ("bottom-right", tr("Снизу справа")),
+             ("center", tr("По центру"))],
             self._on_wm_position,
         )
         self.wm_opacity = ft.Slider(
@@ -612,14 +613,14 @@ class SettingsPanel:
             on_change=self._on_wm_opacity,
         )
         return section(
-            "Водяной знак", ft.Icons.BRANDING_WATERMARK_OUTLINED,
+            tr("Водяной знак"), ft.Icons.BRANDING_WATERMARK_OUTLINED,
             full_width(self.wm_text),
             full_width(self.wm_position),
             ft.Column(spacing=0, controls=[
-                label("Непрозрачность"),
+                label(tr("Непрозрачность")),
                 ft.Row([self.wm_opacity]),
             ]),
-            subtitle="Для картинок и видео",
+            subtitle=tr("Для картинок и видео"),
             visible=False,
         )
 
@@ -635,11 +636,11 @@ class SettingsPanel:
     # ------------------------------------------------------------ output
     def _build_output(self) -> ft.Container:
         self.out_path = ft.Text(
-            "Рядом с исходными файлами", theme_style=ft.TextThemeStyle.BODY_MEDIUM,
+            tr("Рядом с исходными файлами"), theme_style=ft.TextThemeStyle.BODY_MEDIUM,
             max_lines=2, overflow=ft.TextOverflow.ELLIPSIS,
         )
         self.out_reset = ft.IconButton(
-            icon=ft.Icons.CLOSE_ROUNDED, tooltip="Сохранять рядом с исходными",
+            icon=ft.Icons.CLOSE_ROUNDED, tooltip=tr("Сохранять рядом с исходными"),
             visible=False, on_click=lambda _e: self.app.set_out_dir(None),
         )
         folder_tile = ft.Container(
@@ -653,87 +654,87 @@ class SettingsPanel:
                 controls=[
                     ft.Icon(ft.Icons.FOLDER_OUTLINED, color=ft.Colors.PRIMARY),
                     ft.Column(spacing=0, expand=True, controls=[
-                        label("Папка"), self.out_path,
+                        label(tr("Папка")), self.out_path,
                     ]),
                     self.out_reset,
                 ],
             ),
         )
         self.overwrite = dropdown(
-            "Если файл уже есть", self.s.overwrite_mode,
-            [("rename", "Сохранить под новым именем"), ("overwrite", "Перезаписать"),
-             ("skip", "Пропустить")],
+            tr("Если файл уже есть"), self.s.overwrite_mode,
+            [("rename", tr("Сохранить под новым именем")), ("overwrite", tr("Перезаписать")),
+             ("skip", tr("Пропустить"))],
             self._on_overwrite,
         )
         self.checksum = dropdown(
-            "Контрольная сумма", "off",
-            [("off", "Не считать"), ("md5", "MD5"), ("sha256", "SHA-256")],
+            tr("Контрольная сумма"), "off",
+            [("off", tr("Не считать")), ("md5", "MD5"), ("sha256", "SHA-256")],
             self._on_checksum,
         )
         meta_row, self.meta_switch = switch_row(
-            "Копировать метаданные", self.s.copy_metadata, self._on_metadata,
-            "Метаданные",
-            "Теги, обложки, даты, GPS и прочая служебная информация из оригинала. "
-            "Выключите, если публикуете файл и не хотите делиться лишним.",
+            tr("Копировать метаданные"), self.s.copy_metadata, self._on_metadata,
+            tr("Метаданные"),
+            tr("Теги, обложки, даты, GPS и прочая служебная информация из оригинала. "
+            "Выключите, если публикуете файл и не хотите делиться лишним."),
         )
         prio_row, self.prio_switch = switch_row(
-            "Фоновый режим", self.s.low_priority, self._on_priority,
-            "Фоновый режим",
-            "ffmpeg работает с пониженным приоритетом: конвертация чуть дольше, "
-            "зато компьютер не тормозит — можно работать или играть параллельно.",
+            tr("Фоновый режим"), self.s.low_priority, self._on_priority,
+            tr("Фоновый режим"),
+            tr("ffmpeg работает с пониженным приоритетом: конвертация чуть дольше, "
+            "зато компьютер не тормозит — можно работать или играть параллельно."),
         )
         sound_row, self.sound_switch = switch_row(
-            "Звук и уведомление в конце", self.app.notify_enabled, self._on_sound,
-            "Уведомление",
-            "Когда очередь готова — короткий звук, а если окно свёрнуто или в фоне, "
-            "ещё и системное уведомление.")
+            tr("Звук и уведомление в конце"), self.app.notify_enabled, self._on_sound,
+            tr("Уведомление"),
+            tr("Когда очередь готова — короткий звук, а если окно свёрнуто или в фоне, "
+            "ещё и системное уведомление."))
         self.template = ft.TextField(
-            label="Имя файла", value=self.s.name_template, dense=True,
+            label=tr("Имя файла"), value=self.s.name_template, dense=True,
             border_radius=SHAPE_SMALL, on_change=self._on_template,
             prefix_icon=ft.Icons.DRIVE_FILE_RENAME_OUTLINE_ROUNDED,
         )
         self.template_example = label("")
         tokens = ft.Row(wrap=True, spacing=6, run_spacing=6, controls=[
-            ft.Chip(label=tok, tooltip=desc, on_click=lambda _e, t=tok: self._add_token(t))
+            ft.Chip(label=tok, tooltip=tr(desc), on_click=lambda _e, t=tok: self._add_token(t))
             for tok, desc in NAME_TOKENS.items()
         ])
         self.structure_row, self.structure_switch = switch_row(
-            "Сохранять структуру папок", self.s.keep_structure, self._on_structure,
-            "Структура папок",
-            "Если вы добавили целую папку, в папке вывода повторятся её подпапки. "
-            "Работает, когда выбрана отдельная папка для сохранения.")
+            tr("Сохранять структуру папок"), self.s.keep_structure, self._on_structure,
+            tr("Структура папок"),
+            tr("Если вы добавили целую папку, в папке вывода повторятся её подпапки. "
+            "Работает, когда выбрана отдельная папка для сохранения."))
         self.structure_row.visible = False
         self.jobs = dropdown(
-            "Одновременно", "0",
-            [("0", "Авто"), ("1", "По одному"), ("2", "2 файла"), ("4", "4 файла"),
-             ("8", "8 файлов")],
+            tr("Одновременно"), "0",
+            [("0", tr("Авто")), ("1", tr("По одному")), ("2", tr("2 файла")), ("4", tr("4 файла")),
+             ("8", tr("8 файлов"))],
             lambda e: self.app.set_jobs(int(e.control.value)),
         )
         self.concat_row, self.concat_switch = switch_row(
-            "Склеить в один файл", False, lambda e: self.app.set_concat(bool(e.control.value)),
-            "Склейка",
-            "Все файлы очереди соединятся по порядку в один. Порядок меняется "
-            "перетаскиванием в очереди. Разные разрешения и частоты приводятся к первому файлу.")
+            tr("Склеить в один файл"), False, lambda e: self.app.set_concat(bool(e.control.value)),
+            tr("Склейка"),
+            tr("Все файлы очереди соединятся по порядку в один. Порядок меняется "
+            "перетаскиванием в очереди. Разные разрешения и частоты приводятся к первому файлу."))
         self.concat_row.visible = False
         return section(
-            "Сохранение", ft.Icons.SAVE_OUTLINED,
+            tr("Сохранение"), ft.Icons.SAVE_OUTLINED,
             folder_tile,
             self.structure_row,
-            with_help(self.template, "Шаблон имени",
-                      "Из чего собрать имя готового файла. Нажмите на метку ниже, чтобы "
-                      "вставить её. Расширение добавится само."),
+            with_help(self.template, tr("Шаблон имени"),
+                      tr("Из чего собрать имя готового файла. Нажмите на метку ниже, чтобы "
+                      "вставить её. Расширение добавится само.")),
             tokens,
             self.template_example,
-            with_help(self.overwrite, "Если файл уже есть",
-                      "Что делать, если в папке уже лежит файл с таким именем. "
-                      "По умолчанию добавляется суффикс _1, _2…"),
-            with_help(self.checksum, "Контрольная сумма",
-                      "Хэш готового файла — чтобы потом проверить, что он не побился при "
-                      "копировании. MD5 быстрее, SHA-256 надёжнее."),
-            with_help(self.jobs, "Одновременная конвертация",
-                      "Сколько файлов обрабатывать параллельно. «Авто»: картинки — по числу "
+            with_help(self.overwrite, tr("Если файл уже есть"),
+                      tr("Что делать, если в папке уже лежит файл с таким именем. "
+                      "По умолчанию добавляется суффикс _1, _2…")),
+            with_help(self.checksum, tr("Контрольная сумма"),
+                      tr("Хэш готового файла — чтобы потом проверить, что он не побился при "
+                      "копировании. MD5 быстрее, SHA-256 надёжнее.")),
+            with_help(self.jobs, tr("Одновременная конвертация"),
+                      tr("Сколько файлов обрабатывать параллельно. «Авто»: картинки — по числу "
                       "ядер, аудио — несколько сразу, видео — по одному (ffmpeg и так "
-                      "загружает все ядра)."),
+                      "загружает все ядра).")),
             self.concat_row,
             meta_row,
             prio_row,
@@ -756,10 +757,10 @@ class SettingsPanel:
     def refresh_template_example(self) -> None:
         from pathlib import Path
         item = self.app.selected or (self.app.files[0] if self.app.files else None)
-        src = item.path if item else Path("Отпуск.mov")
+        src = item.path if item else Path(tr("Отпуск.mov"))
         target = self.app.target_ext or "mp4"
         self.template_example.value = (
-            f"Пример: {render_name(self.s.name_template, src, target, 1, self.s)}.{target}")
+            tr("Пример: {0}.{1}", render_name(self.s.name_template, src, target, 1, self.s), target))
 
     def _on_structure(self, e) -> None:
         self.s.keep_structure = bool(e.control.value)
@@ -781,7 +782,7 @@ class SettingsPanel:
         self.app.set_notify(bool(e.control.value))
 
     def show_out_dir(self, path) -> None:
-        self.out_path.value = str(path) if path else "Рядом с исходными файлами"
+        self.out_path.value = str(path) if path else tr("Рядом с исходными файлами")
         self.out_reset.visible = path is not None
         self.structure_row.visible = path is not None and self.app.has_folder_items()
 

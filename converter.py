@@ -1,6 +1,7 @@
 """Conversion engine: images via Pillow, audio/video via ffmpeg."""
 from __future__ import annotations
 
+from i18n import tr
 import dataclasses
 import datetime
 import hashlib
@@ -300,7 +301,7 @@ def _run_ffmpeg(
     """
     if not ffmpeg_available():
         raise ConversionError(
-            "ffmpeg не найден в PATH. Установите ffmpeg, чтобы конвертировать аудио и видео."
+            tr("ffmpeg не найден в PATH. Установите ffmpeg, чтобы конвертировать аудио и видео.")
         )
 
     # Never let ffmpeg wait for keyboard input, keep the log readable.
@@ -385,10 +386,10 @@ def _run_ffmpeg(
             proc.wait()
 
     if is_cancelled and is_cancelled():
-        raise ConversionCancelled("Отменено пользователем.")
+        raise ConversionCancelled(tr("Отменено пользователем."))
     if proc.returncode != 0:
         last = "\n".join(tail[-8:])
-        raise ConversionError(f"ffmpeg вернул код {proc.returncode}:\n{last}")
+        raise ConversionError(tr("ffmpeg вернул код {0}:\n{1}", proc.returncode, last))
 
 
 def _parse_ts(ts: str) -> Optional[float]:
@@ -810,7 +811,7 @@ def _convert_image(src: Path, dst: Path, settings: ConversionSettings) -> None:
 def images_to_pdf(srcs: list[Path], dst: Path, settings: ConversionSettings) -> None:
     """Combine multiple images into one PDF document, preserving order."""
     if not srcs:
-        raise ConversionError("Нет картинок для PDF.")
+        raise ConversionError(tr("Нет картинок для PDF."))
     pages: list[Image.Image] = []
     for src in srcs:
         with open_image(src) as img:
@@ -910,7 +911,7 @@ def _valid_audio_track(src: Path, settings: ConversionSettings,
     if any(s.index == idx and s.kind == "audio" for s in probe_streams(src)):
         return idx
     if on_log:
-        on_log(f"[converter] В {src.name} нет аудиодорожки #{idx} — беру дорожку по умолчанию.")
+        on_log(tr("[converter] В {0} нет аудиодорожки #{1} — беру дорожку по умолчанию.", src.name, idx))
     return None
 
 
@@ -990,11 +991,11 @@ def check_video_compat(target: str, video_codec: str, audio_codec: str) -> Optio
     v_allowed = _CONTAINER_VIDEO_CODECS.get(target)
     if v_allowed and video_codec not in v_allowed:
         names = ", ".join(VIDEO_CODEC_LABELS[c] for c in sorted(v_allowed))
-        return f".{target} поддерживает только видеокодек {names}."
+        return tr(".{0} поддерживает только видеокодек {1}.", target, names)
     a_allowed = _CONTAINER_AUDIO_CODECS.get(target)
     if a_allowed and audio_codec not in a_allowed:
-        names = ", ".join(AUDIO_CODEC_LABELS[c] for c in sorted(a_allowed) if c != "copy")
-        return f".{target} не принимает звук {AUDIO_CODEC_LABELS.get(audio_codec, audio_codec)}. Подойдёт: {names}."
+        names = ", ".join(tr(AUDIO_CODEC_LABELS[c]) for c in sorted(a_allowed) if c != "copy")
+        return tr(".{0} не принимает звук {1}. Подойдёт: {2}.", target, tr(AUDIO_CODEC_LABELS.get(audio_codec, audio_codec)), names)
     return None
 
 
@@ -1125,7 +1126,7 @@ def _subtitle_burn_filter(src: Path, settings: ConversionSettings) -> Optional[s
         subs = [st for st in probe_streams(src) if st.kind == "subtitle"]
         rel = next((n for n, st in enumerate(subs) if st.index == settings.subtitle_track), 0)
         if not subs:
-            raise ConversionError("В видео нет встроенных субтитров, вшивать нечего.")
+            raise ConversionError(tr("В видео нет встроенных субтитров, вшивать нечего."))
         f = f"subtitles=filename='{_escape_filter_path(str(src))}':si={rel}"
     else:
         return None
@@ -1228,7 +1229,7 @@ def _convert_video(
     src_kind = media_kind(src.suffix)
 
     if src_kind != "video":
-        raise ConversionError("Видео можно сделать только из видео.")
+        raise ConversionError(tr("Видео можно сделать только из видео."))
 
     # Video -> audio: strip video stream.
     if target in AUDIO_FORMATS:
@@ -1245,14 +1246,14 @@ def _convert_video(
                             on_proc, is_cancelled)
 
     if target not in VIDEO_FORMATS:
-        raise ConversionError(f"Не умею сохранять видео в .{target}.")
+        raise ConversionError(tr("Не умею сохранять видео в .{0}.", target))
 
     video_codec = settings.video_codec or DEFAULT_VIDEO_CODEC_FOR_CONTAINER.get(target, "h264")
     if video_codec not in VIDEO_ENCODERS:
-        raise ConversionError(f"Неизвестный видеокодек: {video_codec}")
+        raise ConversionError(tr("Неизвестный видеокодек: {0}", video_codec))
     audio_codec = settings.audio_codec_for_video or _DEFAULT_AUDIO_FOR_CONTAINER.get(target, "aac")
     if audio_codec not in AUDIO_CODECS:
-        raise ConversionError(f"Неизвестный аудиокодек: {audio_codec}")
+        raise ConversionError(tr("Неизвестный аудиокодек: {0}", audio_codec))
     problem = check_video_compat(target, video_codec, audio_codec)
     if problem:
         raise ConversionError(problem)
@@ -1266,8 +1267,7 @@ def _convert_video(
         sub_codec = _SOFT_SUB_CODEC.get(target)
         if sub_codec is None:
             raise ConversionError(
-                f".{target} не умеет хранить отключаемые субтитры. Выберите MKV, MP4, MOV "
-                "или WebM — либо вшейте субтитры в картинку.")
+                tr(".{0} не умеет хранить отключаемые субтитры. Выберите MKV, MP4, MOV или WebM — либо вшейте субтитры в картинку.", target))
         args += [*trim, "-i", str(settings.subtitle_file)]
 
     # Video + one audio track ("?" = don't fail on silent videos).
@@ -1311,7 +1311,7 @@ def _extract_subtitles(src, dst, settings, on_log, on_progress, duration_s, on_p
                        is_cancelled) -> None:
     subs = [st for st in probe_streams(src) if st.kind == "subtitle"]
     if not subs:
-        raise ConversionError("В этом видео нет субтитров.")
+        raise ConversionError(tr("В этом видео нет субтитров."))
     idx = settings.subtitle_track if any(st.index == settings.subtitle_track for st in subs) \
         else subs[0].index
     _run_ffmpeg(
@@ -1329,7 +1329,7 @@ def _extract_subtitles(src, dst, settings, on_log, on_progress, duration_s, on_p
 def extract_video_thumbnail(src: Path, dst: Path, timestamp: float = 1.0) -> None:
     """Grab a single frame as a JPEG. Used to render a video preview thumbnail."""
     if not ffmpeg_available():
-        raise ConversionError("ffmpeg не найден.")
+        raise ConversionError(tr("ffmpeg не найден."))
     src = Path(src)
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -1363,16 +1363,16 @@ def convert(
     src = Path(src)
     dst = Path(dst)
     if not src.exists():
-        raise ConversionError(f"Файл не найден: {src}")
+        raise ConversionError(tr("Файл не найден: {0}", src))
     dst.parent.mkdir(parents=True, exist_ok=True)
     settings = settings or default_settings()
 
     src_kind = media_kind(src.suffix)
     dst_kind = target_kind(dst.suffix)
     if src_kind is None:
-        raise ConversionError(f"Неизвестный исходный формат: {src.suffix}")
+        raise ConversionError(tr("Неизвестный исходный формат: {0}", src.suffix))
     if dst_kind is None:
-        raise ConversionError(f"Неизвестный целевой формат: {dst.suffix}")
+        raise ConversionError(tr("Неизвестный целевой формат: {0}", dst.suffix))
 
     existed_before = dst.exists()
     duration = effective_duration(duration_s, settings)
@@ -1387,7 +1387,7 @@ def convert(
             _convert_video(src, dst, settings, on_log, on_progress, duration, on_proc, is_cancelled)
         else:
             raise ConversionError(
-                f"Не умею конвертировать {src_kind} → {dst_kind}."
+                tr("Не умею конвертировать {0} → {1}.", src_kind, dst_kind)
             )
     except BaseException:
         if not existed_before and dst.exists():
@@ -1611,16 +1611,16 @@ def concat_files(
     settings = settings or default_settings()
     srcs = [Path(p) for p in srcs]
     if len(srcs) < 2:
-        raise ConversionError("Для склейки нужно хотя бы два файла.")
+        raise ConversionError(tr("Для склейки нужно хотя бы два файла."))
     dst = Path(dst)
     target = dst.suffix.lower().lstrip(".")
     kinds = {media_kind(p.suffix) for p in srcs}
     if kinds - {"audio", "video"}:
-        raise ConversionError("Склеивать можно только аудио и видео.")
+        raise ConversionError(tr("Склеивать можно только аудио и видео."))
     out_kind = target_kind(target)
     video_out = out_kind == "video"
     if video_out and kinds != {"video"}:
-        raise ConversionError("Видео можно склеить только из видео.")
+        raise ConversionError(tr("Видео можно склеить только из видео."))
     if durations is None:
         durations = [probe_duration(p) or 0 for p in srcs]
     total = sum(durations) or None
@@ -1780,8 +1780,8 @@ def humanize_error(message: str) -> str:
     """Short Russian explanation of a conversion error (first line for the UI)."""
     for pattern, hint in _ERROR_HINTS:
         if re.search(pattern, message, re.IGNORECASE):
-            return hint
-    first = message.strip().splitlines()[0] if message.strip() else "Неизвестная ошибка"
+            return tr(hint)
+    first = message.strip().splitlines()[0] if message.strip() else tr("Неизвестная ошибка")
     return first[:200]
 
 

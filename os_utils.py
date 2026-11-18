@@ -1,6 +1,7 @@
 """Small OS integrations: open/reveal files, sounds, system notifications."""
 from __future__ import annotations
 
+from i18n import tr
 import os
 import shutil
 import subprocess
@@ -16,7 +17,7 @@ def open_path(path: Path) -> Optional[str]:
     """Open a file or folder with the default app. Returns an error text or None."""
     path = Path(path)
     if not path.exists():
-        return "Файл не найден."
+        return tr("Файл не найден.")
     try:
         if sys.platform == "win32":
             os.startfile(str(path))  # noqa: S606
@@ -25,7 +26,7 @@ def open_path(path: Path) -> Optional[str]:
         else:
             subprocess.Popen(["xdg-open", str(path)], **_QUIET)
     except Exception as exc:  # noqa: BLE001
-        return f"Не удалось открыть: {exc}"
+        return tr("Не удалось открыть: {0}", exc)
     return None
 
 
@@ -46,7 +47,7 @@ def reveal_path(path: Path) -> Optional[str]:
             subprocess.Popen(["xdg-open", str(target.parent if target.is_file() else target)],
                              **_QUIET)
     except Exception as exc:  # noqa: BLE001
-        return f"Не удалось открыть папку: {exc}"
+        return tr("Не удалось открыть папку: {0}", exc)
     return None
 
 
@@ -87,7 +88,7 @@ def notify(title: str, body: str) -> None:
                               'display notification (system attribute "CONV_BODY") '
                               'with title (system attribute "CONV_TITLE")'], env=env, **_QUIET)
         elif shutil.which("notify-send"):
-            subprocess.Popen(["notify-send", "-a", "Конвертер", title, body], **_QUIET)
+            subprocess.Popen(["notify-send", "-a", tr("Конвертер"), title, body], **_QUIET)
     except Exception:
         pass
 

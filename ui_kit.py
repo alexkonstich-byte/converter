@@ -6,21 +6,10 @@ generated from a single seed (Material You).
 """
 from __future__ import annotations
 
+from i18n import tr
 from typing import Callable, Optional
 
 import flet as ft
-
-# Material You: the whole palette is derived from one seed color.
-SEED_COLORS: list[tuple[str, str]] = [
-    ("Фиолетовый", "#6750A4"),
-    ("Синий", "#1F5FAD"),
-    ("Бирюзовый", "#006A6A"),
-    ("Зелёный", "#386A20"),
-    ("Янтарный", "#8B5000"),
-    ("Красный", "#B3261E"),
-    ("Розовый", "#984061"),
-]
-DEFAULT_SEED = SEED_COLORS[0][1]
 
 # M3 shape scale.
 SHAPE_SMALL = 8
@@ -39,20 +28,12 @@ KIND_ICON = {
 KIND_LABEL = {"image": "Изображение", "audio": "Аудио", "video": "Видео"}
 
 
-def build_theme(seed: str) -> ft.Theme:
-    return ft.Theme(
-        color_scheme_seed=seed,
-        use_material3=True,
-        visual_density=ft.VisualDensity.STANDARD,
-    )
-
-
 def human_size(n: float) -> str:
-    for unit in ("Б", "КБ", "МБ", "ГБ"):
+    for unit in (tr("Б"), tr("КБ"), tr("МБ"), tr("ГБ")):
         if n < 1024:
-            return f"{n:.0f} {unit}" if unit == "Б" else f"{n:.1f} {unit}"
+            return f"{n:.0f} {unit}" if unit == tr("Б") else f"{n:.1f} {unit}"
         n /= 1024
-    return f"{n:.1f} ТБ"
+    return tr("{0:.1f} ТБ", n)
 
 
 def fmt_time(seconds: float) -> str:
@@ -118,7 +99,7 @@ class HelpButton(ft.IconButton):
         super().__init__(
             icon=ft.Icons.HELP_OUTLINE_ROUNDED,
             icon_size=18,
-            tooltip="Что это?",
+            tooltip=tr("Что это?"),
             icon_color=ft.Colors.ON_SURFACE_VARIANT,
             on_click=self._open,
         )
@@ -130,7 +111,7 @@ class HelpButton(ft.IconButton):
             icon=ft.Icon(ft.Icons.LIGHTBULB_OUTLINE_ROUNDED),
             title=ft.Text(self._title),
             content=ft.Container(width=420, content=ft.Text(self._message, selectable=True)),
-            actions=[ft.TextButton("Понятно", on_click=lambda _e: self.page.pop_dialog())],
+            actions=[ft.TextButton(tr("Понятно"), on_click=lambda _e: self.page.pop_dialog())],
         )
         self.page.show_dialog(dlg)
 

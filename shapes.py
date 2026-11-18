@@ -179,33 +179,28 @@ class _Spinner:
 class Backdrop:
     """Big, slow, low-contrast shapes behind the UI (M3 Expressive decoration)."""
 
-    LAYOUT = [
-        # kind, size, left, top, color, opacity, rad/s
-        ("cookie12", 520, -170, -190, ft.Colors.PRIMARY_CONTAINER, 0.85, 0.035),
-        ("clover4", 420, None, None, ft.Colors.TERTIARY_CONTAINER, 0.80, -0.045),
-        ("soft_burst", 300, 380, None, ft.Colors.SECONDARY_CONTAINER, 0.70, 0.06),
-        ("pentagon", 220, None, 70, ft.Colors.PRIMARY_CONTAINER, 0.55, -0.05),
+    # size, position, color, opacity, rad/s — the shape kinds come from the theme
+    SLOTS = [
+        (520, dict(left=-170, top=-190), ft.Colors.PRIMARY_CONTAINER, 0.85, 0.035),
+        (420, dict(right=-140, bottom=-160), ft.Colors.TERTIARY_CONTAINER, 0.80, -0.045),
+        (300, dict(left=380, bottom=-120), ft.Colors.SECONDARY_CONTAINER, 0.70, 0.06),
+        (220, dict(right=260, top=70), ft.Colors.PRIMARY_CONTAINER, 0.55, -0.05),
     ]
 
-    def __init__(self, spinner: _Spinner):
+    def __init__(self, spinner: _Spinner, kinds=("cookie12", "clover4", "soft_burst", "pentagon")):
+        self.holders: list[ft.Container] = []
         children = []
-        for kind, size, left, top, color, opacity, speed in self.LAYOUT:
+        for (size, pos, color, opacity, speed), kind in zip(self.SLOTS, kinds):
             holder = ft.Container(content=shape_canvas(kind, size, color, opacity),
                                   width=size, height=size)
             spinner.add(holder, speed)
-            pos = {}
-            if left is not None:
-                pos["left"] = left
-            if top is not None:
-                pos["top"] = top
-            if kind == "clover4":
-                pos.update(right=-140, bottom=-160)
-            elif kind == "soft_burst":
-                pos.update(bottom=-120)
-            elif kind == "pentagon":
-                pos.update(right=260)
+            self.holders.append(holder)
             children.append(ft.Container(holder, **pos))
         self.control = ft.Stack(children, expand=True)
+
+    def set_shapes(self, kinds) -> None:
+        for holder, (size, _pos, color, opacity, _speed), kind in zip(self.holders, self.SLOTS, kinds):
+            holder.content = shape_canvas(kind, size, color, opacity)
 
 
 class ShapeBadge(ft.Container):

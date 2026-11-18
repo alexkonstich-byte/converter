@@ -6,6 +6,7 @@ huge photos don't go over the wire at full size.
 """
 from __future__ import annotations
 
+from i18n import tr
 import hashlib
 import io
 import tempfile
@@ -81,9 +82,9 @@ class PreviewPane:
         self._seeking = False
         self._token = 0  # bumps on every selection; stale background jobs bail out
 
-        self.title = ft.Text("Предпросмотр", theme_style=ft.TextThemeStyle.TITLE_MEDIUM,
+        self.title = ft.Text(tr("Предпросмотр"), theme_style=ft.TextThemeStyle.TITLE_MEDIUM,
                              max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
-        self.subtitle = label("Выберите файл в очереди", max_lines=1,
+        self.subtitle = label(tr("Выберите файл в очереди"), max_lines=1,
                               overflow=ft.TextOverflow.ELLIPSIS)
 
         self.placeholder = ft.Container(
@@ -97,7 +98,7 @@ class PreviewPane:
                                color=ft.Colors.SECONDARY_CONTAINER,
                                icon_color=ft.Colors.ON_SECONDARY_CONTAINER,
                                spinner=app.spinner, speed=0.2),
-                    label("Здесь появится картинка, видео или плеер"),
+                    label(tr("Здесь появится картинка, видео или плеер")),
                 ],
             ),
         )
@@ -112,7 +113,7 @@ class PreviewPane:
 
         # Inline audio player (M3: tonal play button + slider + timestamps).
         self.play_btn = ft.FilledTonalIconButton(
-            icon=ft.Icons.PLAY_ARROW_ROUNDED, tooltip="Воспроизвести",
+            icon=ft.Icons.PLAY_ARROW_ROUNDED, tooltip=tr("Воспроизвести"),
             on_click=self._toggle_play,
         )
         self.seek = ft.Slider(min=0, max=1, value=0, expand=True, year_2023=False,
@@ -139,17 +140,17 @@ class PreviewPane:
         )
 
         self.track_dropdown = ft.Dropdown(
-            label="Звуковая дорожка", dense=True, visible=False,
+            label=tr("Звуковая дорожка"), dense=True, visible=False,
             border_radius=8, on_select=self._on_track, expand=True,
             leading_icon=ft.Icons.AUDIOTRACK_OUTLINED,
         )
         self.sub_dropdown = ft.Dropdown(
-            label="Субтитры", dense=True, visible=False,
+            label=tr("Субтитры"), dense=True, visible=False,
             border_radius=8, on_select=self._on_sub_track, expand=True,
             leading_icon=ft.Icons.SUBTITLES_OUTLINED,
         )
         self.open_btn = ft.TextButton(
-            "Открыть", icon=ft.Icons.OPEN_IN_NEW_ROUNDED, visible=False,
+            tr("Открыть"), icon=ft.Icons.OPEN_IN_NEW_ROUNDED, visible=False,
             on_click=lambda _e: self.item and self.app.open_path(self.item.path),
         )
 
@@ -206,8 +207,8 @@ class PreviewPane:
         self.placeholder.visible = item is None
 
         if item is None:
-            self.title.value = "Предпросмотр"
-            self.subtitle.value = "Выберите файл в очереди"
+            self.title.value = tr("Предпросмотр")
+            self.subtitle.value = tr("Выберите файл в очереди")
             return
 
         self.title.value = item.path.name
@@ -230,7 +231,7 @@ class PreviewPane:
             size = human_size(item.path.stat().st_size)
         except OSError:
             size = "?"
-        bits = [KIND_LABEL.get(item.kind or "", "Файл"), item.path.suffix.lstrip(".").upper(), size]
+        bits = [tr(KIND_LABEL.get(item.kind or "", "Файл")), item.path.suffix.lstrip(".").upper(), size]
         if item.duration_s:
             bits.append(fmt_time(item.duration_s))
             if item.kind == "audio" and self._duration_ms <= 0:
@@ -258,7 +259,7 @@ class PreviewPane:
         if len(tracks) < 2:
             self.track_dropdown.visible = False
             return
-        self.track_dropdown.options = [ft.DropdownOption(key="default", text="Первая (по умолчанию)")] + [
+        self.track_dropdown.options = [ft.DropdownOption(key="default", text=tr("Первая (по умолчанию)"))] + [
             ft.DropdownOption(key=str(t.index), text=f"#{n} · {t.label}")
             for n, t in enumerate(tracks, start=1)
         ]
@@ -287,7 +288,7 @@ class PreviewPane:
             if err is not None:
                 self.placeholder.visible = True
                 self.placeholder.content.controls[1].value = (
-                    f"Не удалось показать: {humanize_error(str(err))}")
+                    tr("Не удалось показать: {0}", humanize_error(str(err))))
             else:
                 consumer(data)
             self.app.page.update()
@@ -343,7 +344,7 @@ class PreviewPane:
         self._update_pos(0)
         if fta is None:
             self.play_btn.disabled = True
-            self.play_btn.tooltip = "Установите flet-audio для прослушивания"
+            self.play_btn.tooltip = tr("Установите flet-audio для прослушивания")
             return
         self.play_btn.disabled = False
         try:
@@ -388,12 +389,12 @@ class PreviewPane:
                 await self._audio.play(pos)
             self._set_play_icon(not self._playing)
         except Exception as exc:
-            self.app.toast(f"Не удалось воспроизвести: {exc}", error=True)
+            self.app.toast(tr("Не удалось воспроизвести: {0}", exc), error=True)
 
     def _set_play_icon(self, playing: bool) -> None:
         self._playing = playing
         self.play_btn.icon = ft.Icons.PAUSE_ROUNDED if playing else ft.Icons.PLAY_ARROW_ROUNDED
-        self.play_btn.tooltip = "Пауза" if playing else "Воспроизвести"
+        self.play_btn.tooltip = tr("Пауза") if playing else tr("Воспроизвести")
 
     def _on_duration(self, e) -> None:
         d = getattr(e, "duration", None)

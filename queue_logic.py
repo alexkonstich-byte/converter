@@ -4,6 +4,7 @@ Kept free of Flet so it can be unit-tested (see tests/test_queue_logic.py).
 """
 from __future__ import annotations
 
+from i18n import get_language
 import dataclasses
 import os
 from pathlib import Path
@@ -118,6 +119,8 @@ def plural(n: int, one: str, few: str, many: str) -> str:
 
 
 def files_word(n: int) -> str:
+    if get_language() != "ru":
+        return "file" if n == 1 else "files"
     return plural(n, "файл", "файла", "файлов")
 
 

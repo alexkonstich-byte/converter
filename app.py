@@ -1,6 +1,7 @@
 """Universal media converter — Material 3 / Material You GUI on Flet 1.x."""
 from __future__ import annotations
 
+from i18n import get_language, set_language, tr
 import atexit
 import dataclasses
 import json
@@ -55,16 +56,14 @@ from queue_logic import (
     settings_to_dict,
 )
 from settings_panel import SettingsPanel
+from themes import DEFAULT_FONT, DEFAULT_THEME, FONTS, build_theme, get_theme, page_fonts, theme_for_seed
 from shapes import Backdrop, ExpressiveLoader, ShapeBadge, expressive_button_style, make_spinner
 from ui_kit import (
-    DEFAULT_SEED,
     KIND_ICON,
     KIND_LABEL,
     PANE_BG,
-    SEED_COLORS,
     SHAPE_EXTRA_LARGE,
     SHAPE_LARGE,
-    build_theme,
     fmt_time,
     human_size,
     label,
@@ -109,7 +108,7 @@ class FileItem:
 
 
 class ConverterApp:
-    def __init__(self, page: ft.Page):
+    def __init__(self, page: ft.Page, restore: Optional["ConverterApp"] = None):
         self.page = page
         self.files: list[FileItem] = []
         self.target_ext: Optional[str] = None
@@ -117,7 +116,11 @@ class ConverterApp:
         self.settings: ConversionSettings = default_settings()
         self.out_dir: Optional[Path] = None
         self.notify_enabled = True
-        self.seed = DEFAULT_SEED
+        self.theme = DEFAULT_THEME
+        self.font = DEFAULT_FONT
+        self.amoled = False
+        self.backdrop_on = True
+        self.theme_mode = "system"
         self.selected: Optional[FileItem] = None
         self.jobs = 0              # 0 = auto
         self.concat = False
@@ -153,22 +156,70 @@ class ConverterApp:
         self.clipboard = ft.Clipboard()
         self.url_launcher = ft.UrlLauncher()
 
+        if restore is not None:
+            self._take_state(restore)
         self._setup_page()
         self.spinner = make_spinner(page)  # drives every slowly rotating M3 shape
         self.panel = SettingsPanel(self)
         self.preview = PreviewPane(self)
         self._build()
-        threading.Thread(target=cleanup_thumbnails, daemon=True).start()
+        if restore is not None:
+            self._after_restore(restore)
+        else:
+            threading.Thread(target=cleanup_thumbnails, daemon=True).start()
+
+    # ------------------------------------------------ rebuild (language change)
+    _STATE = ("files", "target_ext", "target_group", "settings", "out_dir", "notify_enabled",
+              "jobs", "concat", "user_presets", "theme", "font", "amoled", "backdrop_on",
+              "theme_mode", "_prefs_loaded", "_log_lines", "_last_output_dir")
+
+    def _take_state(self, old: "ConverterApp") -> None:
+        for name in self._STATE:
+            setattr(self, name, getattr(old, name))
+        for item in self.files:
+            item.ui = {}
+
+    def _after_restore(self, old: "ConverterApp") -> None:
+        self.panel.sync()
+        self.panel.sound_switch.value = self.notify_enabled
+        self.panel.jobs.value = str(self.jobs)
+        self.panel.concat_switch.value = self.concat
+        self.panel.show_out_dir(self.out_dir)
+        self._apply_theme_mode(self.theme_mode, save=False)
+        if old.selected in self.files:
+            self._select(old.selected, refresh=False)
+        self._refresh_all()
+
+    def set_language(self, lang: str) -> None:
+        if lang == get_language():
+            return
+        if self.running:
+            self.toast(tr("Язык сменится после завершения конвертации."), error=True)
+            return
+        self._save_pref("lang", lang)
+        set_language(lang)
+        try:
+            self.page.pop_dialog()
+        except Exception:
+            pass
+        # Every label is built in the current language → rebuild the UI, keep the state.
+        self.spinner.stop()
+        self.run_loader.stop()
+        self.preview.stop()
+        atexit.unregister(self.shutdown)
+        self.page.controls.clear()
+        ConverterApp(self.page, restore=self)
+        self.page.update()
 
     # =================================================================== page
     def _setup_page(self) -> None:
         p = self.page
-        p.title = "Конвертер"
+        p.title = tr("Конвертер")
         p.padding = 0
         p.spacing = 0
         p.theme_mode = ft.ThemeMode.SYSTEM
-        p.theme = build_theme(self.seed)
-        p.dark_theme = build_theme(self.seed)
+        p.fonts = page_fonts()
+        self._apply_visuals(update=False)
         p.window.width = 1280
         p.window.height = 860
         p.window.min_width = 960
@@ -191,12 +242,20 @@ class ConverterApp:
                 return None
 
         seed, theme = await get("seed"), await get("theme")
+        theme_key, font, amoled = await get("theme_key"), await get("font"), await get("amoled")
+        backdrop_on = await get("backdrop")
         notify, out_dir = await get("notify"), await get("out_dir")
         settings_json, target = await get("settings"), await get("target")
         jobs, presets_json = await get("jobs"), await get("user_presets")
 
-        if isinstance(seed, str) and seed:
-            self._apply_seed(seed, save=False)
+        self.theme = get_theme(theme_key) if isinstance(theme_key, str) else theme_for_seed(seed)
+        if isinstance(font, str) and font in FONTS:
+            self.font = font
+        if isinstance(amoled, bool):
+            self.amoled = amoled
+        if isinstance(backdrop_on, bool):
+            self.backdrop_on = backdrop_on
+        self._apply_visuals(update=False)
         if theme in ("system", "light", "dark"):
             self._apply_theme_mode(theme, save=False)
         if isinstance(notify, bool):
@@ -264,8 +323,8 @@ class ConverterApp:
         self.left_col = ft.Container(width=420, content=self.left_pane)
 
         self.sample_btn = ft.TextButton(
-            "Проба 5 с", icon=ft.Icons.SCIENCE_OUTLINED, visible=False,
-            tooltip="Сконвертировать 5 секунд из середины и прикинуть итоговый размер",
+            tr("Проба 5 с"), icon=ft.Icons.SCIENCE_OUTLINED, visible=False,
+            tooltip=tr("Сконвертировать 5 секунд из середины и прикинуть итоговый размер"),
             on_click=lambda _e: self._run_sample(),
         )
         self.preview.actions.controls.insert(0, self.sample_btn)
@@ -292,7 +351,8 @@ class ConverterApp:
                 on_entered=lambda _e: self._drop_highlight(True),
                 on_exited=lambda _e: self._drop_highlight(False),
             )
-        self.backdrop = Backdrop(self.spinner)
+        self.backdrop = Backdrop(self.spinner, self.theme.shapes)
+        self.backdrop.control.visible = self.backdrop_on
         self.page.add(
             ft.Stack(
                 expand=True,
@@ -318,27 +378,27 @@ class ConverterApp:
             show_selected_icon=False,
             segments=[
                 ft.Segment(value="system", icon=ft.Icons.BRIGHTNESS_AUTO_OUTLINED,
-                           tooltip="Как в системе"),
-                ft.Segment(value="light", icon=ft.Icons.LIGHT_MODE_OUTLINED, tooltip="Светлая"),
-                ft.Segment(value="dark", icon=ft.Icons.DARK_MODE_OUTLINED, tooltip="Тёмная"),
+                           tooltip=tr("Как в системе")),
+                ft.Segment(value="light", icon=ft.Icons.LIGHT_MODE_OUTLINED, tooltip=tr("Светлая")),
+                ft.Segment(value="dark", icon=ft.Icons.DARK_MODE_OUTLINED, tooltip=tr("Тёмная")),
             ],
             on_change=lambda e: self._apply_theme_mode(e.control.selected[0]),
         )
-        self.palette_menu = ft.PopupMenuButton(
+        self.palette_menu = ft.IconButton(
             icon=ft.Icons.PALETTE_OUTLINED,
-            tooltip="Цвет оформления (Material You)",
-            items=self._palette_items(),
+            tooltip=tr("Оформление, шрифт и язык"),
+            on_click=lambda _e: dialogs.show_appearance(self),
         )
         self.compact_btn = ft.IconButton(
             icon=ft.Icons.PICTURE_IN_PICTURE_ALT_OUTLINED,
-            tooltip="Компактный режим поверх окон",
+            tooltip=tr("Компактный режим поверх окон"),
             on_click=self._toggle_compact,
         )
         self.hotkeys_btn = ft.IconButton(
-            icon=ft.Icons.KEYBOARD_OUTLINED, tooltip="Горячие клавиши (F1)",
+            icon=ft.Icons.KEYBOARD_OUTLINED, tooltip=tr("Горячие клавиши (F1)"),
             on_click=lambda _e: dialogs.show_hotkeys(self.page),
         )
-        self.app_title_sub = label("Картинки · аудио · видео", style=ft.TextThemeStyle.BODY_MEDIUM)
+        self.app_title_sub = label(tr("Картинки · аудио · видео"), style=ft.TextThemeStyle.BODY_MEDIUM)
         return ft.Container(
             padding=ft.Padding.symmetric(vertical=12, horizontal=4),
             content=ft.Row(
@@ -348,44 +408,53 @@ class ConverterApp:
                     ShapeBadge("cookie9", 52, ft.Icons.AUTORENEW_ROUNDED,
                                spinner=self.spinner, speed=0.5, icon_size=26),
                     ft.Column(spacing=0, expand=True, controls=[
-                        ft.Text("Конвертер", theme_style=ft.TextThemeStyle.TITLE_LARGE,
+                        ft.Text(tr("Конвертер"), theme_style=ft.TextThemeStyle.TITLE_LARGE,
                                 weight=ft.FontWeight.W_600),
                         self.app_title_sub,
                     ]),
                     self.palette_menu,
                     self.theme_toggle,
                     self.hotkeys_btn,
-                    ft.IconButton(icon=ft.Icons.TERMINAL_ROUNDED, tooltip="Журнал ffmpeg (Ctrl+L)",
+                    ft.IconButton(icon=ft.Icons.TERMINAL_ROUNDED, tooltip=tr("Журнал ffmpeg (Ctrl+L)"),
                                   on_click=self._open_log),
                     self.compact_btn,
                 ],
             ),
         )
 
-    def _palette_items(self) -> list[ft.PopupMenuItem]:
-        items = []
-        for name, color in SEED_COLORS:
-            items.append(ft.PopupMenuItem(
-                content=ft.Row(spacing=12, controls=[
-                    ft.Container(width=20, height=20, border_radius=10, bgcolor=color),
-                    ft.Text(name, expand=True),
-                    ft.Icon(ft.Icons.CHECK_ROUNDED, size=18,
-                            visible=color.lower() == self.seed.lower()),
-                ]),
-                on_click=lambda _e, c=color: self._apply_seed(c),
-            ))
-        return items
+    def _apply_visuals(self, update: bool = True) -> None:
+        p = self.page
+        p.theme = build_theme(self.theme, self.font)
+        p.dark_theme = build_theme(self.theme, self.font, dark=True, amoled=self.amoled)
+        backdrop = getattr(self, "backdrop", None)
+        if backdrop is not None:
+            backdrop.set_shapes(self.theme.shapes)
+            backdrop.control.visible = self.backdrop_on
+        if update:
+            p.update()
 
-    def _apply_seed(self, seed: str, save: bool = True) -> None:
-        self.seed = seed
-        self.page.theme = build_theme(seed)
-        self.page.dark_theme = build_theme(seed)
-        self.palette_menu.items = self._palette_items()
-        if save:
-            self._save_pref("seed", seed)
-        self.page.update()
+    def set_theme(self, key: str) -> None:
+        self.theme = get_theme(key)
+        self._save_pref("theme_key", self.theme.key)
+        self._apply_visuals()
+
+    def set_font(self, font: str) -> None:
+        self.font = font if font in FONTS else DEFAULT_FONT
+        self._save_pref("font", self.font)
+        self._apply_visuals()
+
+    def set_amoled(self, value: bool) -> None:
+        self.amoled = value
+        self._save_pref("amoled", value)
+        self._apply_visuals()
+
+    def set_backdrop(self, value: bool) -> None:
+        self.backdrop_on = value
+        self._save_pref("backdrop", value)
+        self._apply_visuals()
 
     def _apply_theme_mode(self, mode: str, save: bool = True) -> None:
+        self.theme_mode = mode
         self.page.theme_mode = {
             "light": ft.ThemeMode.LIGHT, "dark": ft.ThemeMode.DARK,
         }.get(mode, ft.ThemeMode.SYSTEM)
@@ -397,11 +466,11 @@ class ConverterApp:
     # --------------------------------------------------------- ffmpeg banner
     def _build_ffmpeg_banner(self) -> ft.Container:
         if sys.platform == "win32":
-            action = ft.FilledTonalButton("Установить через winget", icon=ft.Icons.DOWNLOAD_ROUNDED,
+            action = ft.FilledTonalButton(tr("Установить через winget"), icon=ft.Icons.DOWNLOAD_ROUNDED,
                                           on_click=self._install_ffmpeg_winget)
         else:
             cmd = "brew install ffmpeg" if sys.platform == "darwin" else "sudo apt install ffmpeg"
-            action = ft.FilledTonalButton(f"Скопировать «{cmd}»", icon=ft.Icons.CONTENT_COPY_ROUNDED,
+            action = ft.FilledTonalButton(tr("Скопировать «{0}»", cmd), icon=ft.Icons.CONTENT_COPY_ROUNDED,
                                           on_click=lambda _e, c=cmd: self.page.run_task(self._copy, c))
         self.ffmpeg_status = label("", visible=False, color=ft.Colors.ON_TERTIARY_CONTAINER)
         return ft.Container(
@@ -415,18 +484,18 @@ class ConverterApp:
                 controls=[
                     ft.Icon(ft.Icons.INFO_OUTLINE_ROUNDED, color=ft.Colors.ON_TERTIARY_CONTAINER),
                     ft.Column(spacing=2, expand=True, controls=[
-                        ft.Text("ffmpeg не найден", theme_style=ft.TextThemeStyle.TITLE_SMALL,
+                        ft.Text(tr("ffmpeg не найден"), theme_style=ft.TextThemeStyle.TITLE_SMALL,
                                 color=ft.Colors.ON_TERTIARY_CONTAINER),
-                        ft.Text("Картинки конвертируются и без него, а для аудио и видео "
-                                "нужен ffmpeg в PATH.",
+                        ft.Text(tr("Картинки конвертируются и без него, а для аудио и видео "
+                                "нужен ffmpeg в PATH."),
                                 theme_style=ft.TextThemeStyle.BODY_SMALL,
                                 color=ft.Colors.ON_TERTIARY_CONTAINER),
                         self.ffmpeg_status,
                     ]),
                     action,
-                    ft.TextButton("Инструкция", icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
+                    ft.TextButton(tr("Инструкция"), icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
                                   on_click=self._open_ffmpeg_docs),
-                    ft.TextButton("Проверить снова", icon=ft.Icons.REFRESH_ROUNDED,
+                    ft.TextButton(tr("Проверить снова"), icon=ft.Icons.REFRESH_ROUNDED,
                                   on_click=self._recheck_ffmpeg),
                 ],
             ),
@@ -443,24 +512,24 @@ class ConverterApp:
                  "--source", "winget"],
                 creationflags=0x00000010,  # CREATE_NEW_CONSOLE
             )
-            msg = "Открыл окно winget. После установки перезапустите приложение."
+            msg = tr("Открыл окно winget. После установки перезапустите приложение.")
         except Exception as e:  # noqa: BLE001
-            msg = f"Не получилось запустить winget: {e}"
+            msg = tr("Не получилось запустить winget: {0}", e)
         self.ffmpeg_status.value = msg
         self.ffmpeg_status.visible = True
 
     def _recheck_ffmpeg(self, _e) -> None:
         if ffmpeg_available():
             self.ffmpeg_banner.visible = False
-            self.toast("ffmpeg найден — всё готово!")
+            self.toast(tr("ffmpeg найден — всё готово!"))
         else:
-            self.ffmpeg_status.value = ("Пока не вижу ffmpeg в PATH. Если только что установили — "
-                                        "перезапустите приложение.")
+            self.ffmpeg_status.value = (tr("Пока не вижу ffmpeg в PATH. Если только что установили — "
+                                        "перезапустите приложение."))
             self.ffmpeg_status.visible = True
 
     async def _copy(self, text: str) -> None:
         await self.clipboard.set(text)
-        self.toast("Скопировано")
+        self.toast(tr("Скопировано"))
 
     # ------------------------------------------------------- target format
     def _build_target_section(self) -> ft.Container:
@@ -468,15 +537,16 @@ class ConverterApp:
             selected=[self.target_group],
             show_selected_icon=False,
             segments=[
-                ft.Segment(value=g, label=GROUP_LABEL[g], icon=KIND_ICON[g])
+                ft.Segment(value=g, label=tr(GROUP_LABEL[g]), icon=KIND_ICON[g])
                 for g in ("image", "audio", "video")
             ],
             on_change=self._on_group_change,
+            expand=True,
         )
         self.format_chips = ft.Row(wrap=True, spacing=8, run_spacing=8)
         self.format_hint = label("", visible=False)
         return section(
-            "Во что конвертировать", ft.Icons.SWAP_HORIZ_ROUNDED,
+            tr("Во что конвертировать"), ft.Icons.SWAP_HORIZ_ROUNDED,
             ft.Row([self.group_buttons]),
             self.format_chips,
             self.format_hint,
@@ -522,7 +592,7 @@ class ConverterApp:
                 show_checkmark=True,
                 leading=ft.Icon(ft.Icons.SUBTITLES_OUTLINED, size=16)
                 if ext in SUBTITLE_FORMATS else None,
-                tooltip="Извлечь субтитры" if ext in SUBTITLE_FORMATS else None,
+                tooltip=tr("Извлечь субтитры") if ext in SUBTITLE_FORMATS else None,
                 on_select=lambda e, x=ext: self._set_target(x if e.control.selected else None),
             ))
         self.format_chips.controls = chips
@@ -530,11 +600,11 @@ class ConverterApp:
         kinds = set(self._kinds())
         hint = ""
         if self.files and not allowed:
-            hint = "В очереди файлы разных типов — общий формат подобрать нельзя."
+            hint = tr("В очереди файлы разных типов — общий формат подобрать нельзя.")
         elif kinds == {"audio", "video"}:
-            hint = "Аудио и видео вместе — можно сохранить только звук."
+            hint = tr("Аудио и видео вместе — можно сохранить только звук.")
         elif kinds == {"video"} and self.target_group == "video":
-            hint = "GIF — анимация без звука. SRT/ASS/VTT — извлечь субтитры."
+            hint = tr("GIF — анимация без звука. SRT/ASS/VTT — извлечь субтитры.")
         self.format_hint.value = hint
         self.format_hint.visible = bool(hint)
         self.format_hint.color = (ft.Colors.ERROR if (self.files and not allowed)
@@ -543,7 +613,7 @@ class ConverterApp:
     # ----------------------------------------------------------- presets
     def _build_preset_section(self) -> ft.Container:
         self.preset_dropdown = ft.Dropdown(
-            label="Готовый рецепт",
+            label=tr("Готовый рецепт"),
             value="none",
             dense=True,
             border_radius=8,
@@ -551,32 +621,32 @@ class ConverterApp:
             on_select=self._on_preset,
         )
         self.preset_save_btn = ft.IconButton(
-            icon=ft.Icons.BOOKMARK_ADD_OUTLINED, tooltip="Сохранить текущие настройки как пресет",
+            icon=ft.Icons.BOOKMARK_ADD_OUTLINED, tooltip=tr("Сохранить текущие настройки как пресет"),
             on_click=lambda _e: self._ask_save_preset(),
         )
         self.preset_delete_btn = ft.IconButton(
-            icon=ft.Icons.DELETE_OUTLINE_ROUNDED, tooltip="Удалить мой пресет", visible=False,
+            icon=ft.Icons.DELETE_OUTLINE_ROUNDED, tooltip=tr("Удалить мой пресет"), visible=False,
             on_click=lambda _e: self._delete_preset(),
         )
         self.preset_desc = label("", visible=False)
         self.preset_dropdown.expand = True
         return section(
-            "Пресеты", ft.Icons.AUTO_AWESOME_OUTLINED,
+            tr("Пресеты"), ft.Icons.AUTO_AWESOME_OUTLINED,
             ft.Row([self.preset_dropdown, self.preset_save_btn, self.preset_delete_btn],
                    spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             self.preset_desc,
-            subtitle="Готовые и свои рецепты формата и качества",
+            subtitle=tr("Готовые и свои рецепты формата и качества"),
         )
 
     def _refresh_presets(self) -> None:
         allowed = allowed_targets(self._kinds())
-        opts = [ft.DropdownOption(key="none", text="— не выбран —")]
+        opts = [ft.DropdownOption(key="none", text=tr("— не выбран —"))]
         for name, data in sorted(self.user_presets.items()):
             if data.get("target") in allowed:
                 opts.append(ft.DropdownOption(key=USER_PRESET_PREFIX + name, text=f"★ {name}"))
         for p in PRESETS:
             if p.target_ext in allowed:
-                opts.append(ft.DropdownOption(key=p.key, text=p.label))
+                opts.append(ft.DropdownOption(key=p.key, text=tr(p.label)))
         self.preset_dropdown.options = opts
         if self.preset_dropdown.value not in {o.key for o in opts}:
             self.preset_dropdown.value = "none"
@@ -593,7 +663,7 @@ class ConverterApp:
         if key.startswith(USER_PRESET_PREFIX):
             data = self.user_presets.get(key[len(USER_PRESET_PREFIX):]) or {}
             new = settings_from_dict(data.get("settings", {}), new)
-            target, desc = data.get("target"), "Ваш пресет."
+            target, desc = data.get("target"), tr("Ваш пресет.")
         else:
             preset = get_preset(key)
             if preset is None:
@@ -601,7 +671,7 @@ class ConverterApp:
                 self._refresh_presets()
                 return
             preset.apply(new)
-            target, desc = preset.target_ext, preset.description
+            target, desc = preset.target_ext, tr(preset.description)
         self.settings = new
         self.panel.sync()
         groups = allowed_groups(self._kinds())
@@ -618,7 +688,7 @@ class ConverterApp:
 
     def _ask_save_preset(self) -> None:
         if not self.target_ext:
-            self.toast("Сначала выберите формат.", error=True)
+            self.toast(tr("Сначала выберите формат."), error=True)
             return
         dialogs.ask_preset_name(self.page, self._save_preset, list(self.user_presets))
 
@@ -631,7 +701,7 @@ class ConverterApp:
         self._refresh_presets()
         self.preset_dropdown.value = USER_PRESET_PREFIX + name
         self.preset_delete_btn.visible = True
-        self.toast(f"Пресет «{name}» сохранён")
+        self.toast(tr("Пресет «{0}» сохранён", name))
         self.page.update()
 
     def _delete_preset(self) -> None:
@@ -642,7 +712,7 @@ class ConverterApp:
             self.preset_dropdown.value = "none"
             self.preset_desc.visible = False
             self._refresh_presets()
-            self.toast(f"Пресет «{name}» удалён")
+            self.toast(tr("Пресет «{0}» удалён", name))
             self.page.update()
 
     # ------------------------------------------------------------- queue
@@ -655,23 +725,23 @@ class ConverterApp:
             content=ft.Text("0", theme_style=ft.TextThemeStyle.LABEL_MEDIUM,
                             color=ft.Colors.ON_SECONDARY_CONTAINER),
         )
-        self.add_btn = ft.FilledTonalButton("Файлы", icon=ft.Icons.ADD_ROUNDED,
-                                            tooltip="Добавить файлы (Ctrl+O)",
+        self.add_btn = ft.FilledTonalButton(tr("Файлы"), icon=ft.Icons.ADD_ROUNDED,
+                                            tooltip=tr("Добавить файлы (Ctrl+O)"),
                                             style=expressive_button_style(20, 8),
                                             on_click=self._pick_files)
-        self.add_dir_btn = ft.OutlinedButton("Папку", icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
-                                             tooltip="Добавить папку целиком (Ctrl+Shift+O)",
+        self.add_dir_btn = ft.OutlinedButton(tr("Папку"), icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
+                                             tooltip=tr("Добавить папку целиком (Ctrl+Shift+O)"),
                                              style=expressive_button_style(20, 8),
                                              on_click=self._pick_folder)
-        self.clear_btn = ft.TextButton("Очистить", icon=ft.Icons.CLEAR_ALL_ROUNDED,
+        self.clear_btn = ft.TextButton(tr("Очистить"), icon=ft.Icons.CLEAR_ALL_ROUNDED,
                                        on_click=self._clear_files)
         self.queue_list = ft.ReorderableListView(
             expand=True, spacing=8, on_reorder=self._on_reorder,
             show_default_drag_handles=False,
         )
-        drop_hint = ("Перетащите файлы или папку сюда"
+        drop_hint = (tr("Перетащите файлы или папку сюда")
                      if flet_dropzone is not None and os_utils.is_packaged()
-                     else "Добавьте картинки, аудио или видео — тип определится сам")
+                     else tr("Добавьте картинки, аудио или видео — тип определится сам"))
         self.queue_empty = ft.Container(
             expand=True,
             alignment=ft.Alignment.CENTER,
@@ -683,15 +753,15 @@ class ConverterApp:
                 controls=[
                     ShapeBadge("clover4", 104, ft.Icons.UPLOAD_FILE_ROUNDED,
                                spinner=self.spinner, speed=0.3, icon_size=44),
-                    ft.Text("Очередь пуста", theme_style=ft.TextThemeStyle.TITLE_MEDIUM),
+                    ft.Text(tr("Очередь пуста"), theme_style=ft.TextThemeStyle.TITLE_MEDIUM),
                     label(drop_hint, style=ft.TextThemeStyle.BODY_MEDIUM),
                     ft.Row(
                         alignment=ft.MainAxisAlignment.CENTER,
                         controls=[
-                            ft.FilledButton("Выбрать файлы", icon=ft.Icons.ADD_ROUNDED, height=48,
+                            ft.FilledButton(tr("Выбрать файлы"), icon=ft.Icons.ADD_ROUNDED, height=48,
                                             style=expressive_button_style(24, 10),
                                             on_click=self._pick_files),
-                            ft.OutlinedButton("Добавить папку", height=48,
+                            ft.OutlinedButton(tr("Добавить папку"), height=48,
                                               icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
                                               style=expressive_button_style(24, 10),
                                               on_click=self._pick_folder),
@@ -705,7 +775,7 @@ class ConverterApp:
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
                     ft.Icon(ft.Icons.QUEUE_ROUNDED, color=ft.Colors.PRIMARY),
-                    ft.Text("Очередь", theme_style=ft.TextThemeStyle.TITLE_MEDIUM),
+                    ft.Text(tr("Очередь"), theme_style=ft.TextThemeStyle.TITLE_MEDIUM),
                     self.queue_count,
                     ft.Container(expand=True),
                     self.clear_btn,
@@ -721,7 +791,7 @@ class ConverterApp:
         if self.running:
             return
         files = await self.file_picker.pick_files(
-            dialog_title="Выберите файлы", allow_multiple=True,
+            dialog_title=tr("Выберите файлы"), allow_multiple=True,
         )
         if files:
             self.add_paths([Path(f.path) for f in files if f.path])
@@ -729,25 +799,25 @@ class ConverterApp:
     async def _pick_folder(self, _e=None) -> None:
         if self.running:
             return
-        path = await self.file_picker.get_directory_path(dialog_title="Добавить папку")
+        path = await self.file_picker.get_directory_path(dialog_title=tr("Добавить папку"))
         if path:
             self.add_folder(Path(path))
 
     def add_folder(self, folder: Path) -> None:
         found = scan_folder(folder)
         if not found:
-            self.toast("В папке нет поддерживаемых файлов.", error=True)
+            self.toast(tr("В папке нет поддерживаемых файлов."), error=True)
             return
         self.add_paths(found, root=folder)
 
     async def pick_out_dir(self) -> None:
-        path = await self.file_picker.get_directory_path(dialog_title="Куда сохранять")
+        path = await self.file_picker.get_directory_path(dialog_title=tr("Куда сохранять"))
         if path:
             self.set_out_dir(Path(path))
 
     async def pick_subtitle_file(self) -> None:
         files = await self.file_picker.pick_files(
-            dialog_title="Файл субтитров", file_type=ft.FilePickerFileType.CUSTOM,
+            dialog_title=tr("Файл субтитров"), file_type=ft.FilePickerFileType.CUSTOM,
             allowed_extensions=["srt", "ass", "ssa", "vtt"],
         )
         if files and files[0].path:
@@ -805,8 +875,8 @@ class ConverterApp:
             known.add(path)
             added.append(item)
         if skipped:
-            self.toast(f"Не поддерживается: {', '.join(skipped[:3])}"
-                       + (f" и ещё {len(skipped) - 3}" if len(skipped) > 3 else ""), error=True)
+            self.toast(tr("Не поддерживается: {0}", ', '.join(skipped[:3]))
+                       + (tr(" и ещё {0}", len(skipped) - 3) if len(skipped) > 3 else ""), error=True)
         if not added:
             return
         for item in added:
@@ -987,27 +1057,27 @@ class ConverterApp:
             if item.kind == "image" and item.dst and target_kind(item.dst.suffix) == "image" \
                     and item.dst.suffix.lower() != ".pdf":
                 buttons.append(ft.IconButton(
-                    icon=ft.Icons.COMPARE_ROUNDED, tooltip="Сравнить до и после",
+                    icon=ft.Icons.COMPARE_ROUNDED, tooltip=tr("Сравнить до и после"),
                     on_click=lambda _e, it=item: dialogs.show_compare(self.page, it.path, it.dst)))
             buttons += [
-                ft.IconButton(icon=ft.Icons.FOLDER_OPEN_OUTLINED, tooltip="Показать в папке",
+                ft.IconButton(icon=ft.Icons.FOLDER_OPEN_OUTLINED, tooltip=tr("Показать в папке"),
                               on_click=lambda _e, p=item.dst: self.reveal_path(p)),
-                ft.IconButton(icon=ft.Icons.OPEN_IN_NEW_ROUNDED, tooltip="Открыть",
+                ft.IconButton(icon=ft.Icons.OPEN_IN_NEW_ROUNDED, tooltip=tr("Открыть"),
                               on_click=lambda _e, p=item.dst: self.open_path(p)),
                 ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=ft.Colors.PRIMARY),
             ]
             return ft.Row(spacing=0, tight=True, controls=buttons)
         if st == "error":
             return ft.Row(spacing=0, tight=True, controls=[
-                ft.IconButton(icon=ft.Icons.TERMINAL_ROUNDED, tooltip="Подробности в журнале",
+                ft.IconButton(icon=ft.Icons.TERMINAL_ROUNDED, tooltip=tr("Подробности в журнале"),
                               on_click=self._open_log),
                 ft.Icon(ft.Icons.ERROR_ROUNDED, color=ft.Colors.ERROR),
             ])
         if st == "skipped":
             return ft.Icon(ft.Icons.REDO_ROUNDED, color=ft.Colors.OUTLINE, tooltip=item.message)
         if st == "cancelled":
-            return ft.Icon(ft.Icons.CANCEL_OUTLINED, color=ft.Colors.OUTLINE, tooltip="Отменено")
-        return ft.IconButton(icon=ft.Icons.CLOSE_ROUNDED, tooltip="Убрать из очереди (Delete)",
+            return ft.Icon(ft.Icons.CANCEL_OUTLINED, color=ft.Colors.OUTLINE, tooltip=tr("Отменено"))
+        return ft.IconButton(icon=ft.Icons.CLOSE_ROUNDED, tooltip=tr("Убрать из очереди (Delete)"),
                              visible=not self.running,
                              on_click=lambda _e, it=item: self._remove(it))
 
@@ -1030,15 +1100,15 @@ class ConverterApp:
             size = human_size(item.path.stat().st_size)
         except OSError:
             size = "?"
-        bits = [KIND_LABEL.get(item.kind or "", "Файл"), item.path.suffix.lstrip(".").upper(), size]
+        bits = [tr(KIND_LABEL.get(item.kind or "", "Файл")), item.path.suffix.lstrip(".").upper(), size]
         if item.duration_s:
             bits.append(fmt_time(item.duration_s))
         text = " · ".join(bits)
         if item.status == "pending" and item.estimated_size and self.target_ext and not self.concat:
-            text += f" · станет ~{human_size(item.estimated_size)}"
+            text += tr(" · станет ~{0}", human_size(item.estimated_size))
         if item.status == "ok" and item.dst is not None:
             try:
-                text += f" · готово: {item.dst.name} · {human_size(item.dst.stat().st_size)}"
+                text += tr(" · готово: {0} · {1}", item.dst.name, human_size(item.dst.stat().st_size))
             except OSError:
                 pass
             if item.checksum:
@@ -1114,29 +1184,29 @@ class ConverterApp:
 
     # ========================================================== action bar
     def _build_action_bar(self) -> ft.Container:
-        self.status_text = ft.Text("Добавьте файлы и выберите формат",
+        self.status_text = ft.Text(tr("Добавьте файлы и выберите формат"),
                                    theme_style=ft.TextThemeStyle.TITLE_SMALL,
                                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS)
         self.eta_text = label("", style=ft.TextThemeStyle.BODY_SMALL)
         self.progress = ft.ProgressBar(value=0, year_2023=False, visible=False, border_radius=4)
         self.pause_btn = ft.FilledTonalIconButton(
-            icon=ft.Icons.PAUSE_ROUNDED, tooltip="Пауза", visible=False,
+            icon=ft.Icons.PAUSE_ROUNDED, tooltip=tr("Пауза"), visible=False,
             on_click=self._toggle_pause,
         )
         self.cancel_btn = ft.OutlinedButton(
-            "Отменить", icon=ft.Icons.STOP_ROUNDED, visible=False,
+            tr("Отменить"), icon=ft.Icons.STOP_ROUNDED, visible=False,
             tooltip="Esc", on_click=lambda _e: self.cancel(),
         )
         self.retry_btn = ft.TextButton(
-            "Повторить ошибки", icon=ft.Icons.REPLAY_ROUNDED, visible=False,
+            tr("Повторить ошибки"), icon=ft.Icons.REPLAY_ROUNDED, visible=False,
             on_click=lambda _e: self.start(only_failed=True),
         )
         self.open_dir_btn = ft.TextButton(
-            "Открыть папку", icon=ft.Icons.FOLDER_OPEN_OUTLINED, visible=False,
+            tr("Открыть папку"), icon=ft.Icons.FOLDER_OPEN_OUTLINED, visible=False,
             on_click=lambda _e: self._last_output_dir and self.reveal_path(self._last_output_dir),
         )
         self.convert_btn = ft.FilledButton(
-            "Конвертировать",
+            tr("Конвертировать"),
             icon=ft.Icons.PLAY_ARROW_ROUNDED,
             height=56,
             tooltip="Ctrl+Enter",
@@ -1180,7 +1250,7 @@ class ConverterApp:
         ready = bool(self.files) and bool(self.target_ext) and not self.running
         self.convert_btn.visible = not self.running
         self.convert_btn.disabled = not ready
-        self.convert_btn.content = "Склеить" if self.concat else "Конвертировать"
+        self.convert_btn.content = tr("Склеить") if self.concat else tr("Конвертировать")
         self.pause_btn.visible = self.running and psutil is not None
         self.cancel_btn.visible = self.running
         self.progress.visible = self.running
@@ -1189,16 +1259,15 @@ class ConverterApp:
             self.retry_btn.visible = False
         if not self.running:
             if not self.files:
-                self.status_text.value = "Добавьте файлы и выберите формат"
+                self.status_text.value = tr("Добавьте файлы и выберите формат")
             elif not self.target_ext:
-                self.status_text.value = "Выберите формат"
+                self.status_text.value = tr("Выберите формат")
             elif not any(f.status in ("ok", "error", "skipped", "cancelled") for f in self.files):
                 n = len(self.files)
                 if self.concat:
-                    self.status_text.value = f"Склеить {n} {files_word(n)} в один {self.target_ext.upper()}"
+                    self.status_text.value = tr("Склеить {0} {1} в один {2}", n, files_word(n), self.target_ext.upper())
                 else:
-                    self.status_text.value = (f"Готово к конвертации: {n} {files_word(n)} "
-                                              f"в {self.target_ext.upper()}")
+                    self.status_text.value = (tr("Готово к конвертации: {0} {1} в {2}", n, files_word(n), self.target_ext.upper()))
                 self.eta_text.value = ""
 
     # ============================================================ convert
@@ -1206,7 +1275,7 @@ class ConverterApp:
         if self.running or not self.files or not self.target_ext:
             return
         if self.target_ext not in allowed_targets(self._kinds()):
-            self.toast("Этот формат не подходит для файлов в очереди.", error=True)
+            self.toast(tr("Этот формат не подходит для файлов в очереди."), error=True)
             return
         if self.panel.vid_compat.visible:
             self.toast(self.panel.vid_compat.content.controls[1].value, error=True)
@@ -1214,7 +1283,7 @@ class ConverterApp:
         s = self.settings
         if s.subtitle_mode in ("burn_file", "soft_file") and not s.subtitle_file \
                 and self.panel.subtitles.visible:
-            self.toast("Выберите файл субтитров или отключите их.", error=True)
+            self.toast(tr("Выберите файл субтитров или отключите их."), error=True)
             return
 
         batch = [f for f in self.files if f.status == "error"] if only_failed else list(self.files)
@@ -1232,7 +1301,7 @@ class ConverterApp:
             item.progress, item.checksum = 0.0, None
         self.open_dir_btn.visible = False
         self.retry_btn.visible = False
-        self.status_text.value = "Подготовка…"
+        self.status_text.value = tr("Подготовка…")
         self.eta_text.value = ""
         self.progress.value = 0
         self._refresh_queue()
@@ -1265,7 +1334,7 @@ class ConverterApp:
                     proc.kill()
                 except Exception:
                     pass
-        self.status_text.value = "Отменяю…"
+        self.status_text.value = tr("Отменяю…")
         self.cancel_btn.disabled = True
         self.page.update()
 
@@ -1275,7 +1344,7 @@ class ConverterApp:
         with self._lock:
             procs = [p for p in self._procs.values() if p.poll() is None]
         if not procs and not self._paused:
-            self.toast("Сейчас нечего ставить на паузу — идёт обработка картинок.")
+            self.toast(tr("Сейчас нечего ставить на паузу — идёт обработка картинок."))
             return
         for proc in procs:
             try:
@@ -1289,7 +1358,7 @@ class ConverterApp:
             self._pause_started = time.time()
         self._paused = not self._paused
         self.pause_btn.icon = ft.Icons.PLAY_ARROW_ROUNDED if self._paused else ft.Icons.PAUSE_ROUNDED
-        self.pause_btn.tooltip = "Продолжить" if self._paused else "Пауза"
+        self.pause_btn.tooltip = tr("Продолжить") if self._paused else tr("Пауза")
         self.page.update()
 
     def _run(self, files: list[FileItem], target: str, settings: ConversionSettings,
@@ -1338,7 +1407,7 @@ class ConverterApp:
             self._update_status_line()
             self.page.update()
             if dst is None:
-                item.status, item.message = "skipped", "Пропущен: файл уже существует"
+                item.status, item.message = "skipped", tr("Пропущен: файл уже существует")
                 counters["skipped"] += 1
             else:
                 file_settings = dataclasses.replace(
@@ -1370,7 +1439,7 @@ class ConverterApp:
                 except Exception as e:  # noqa: BLE001 — every failure is shown per file
                     item.status, item.message = "error", str(e)
                     counters["failed"] += 1
-                    self._log(f"ОШИБКА ({item.path.name}): {e}")
+                    self._log(tr("ОШИБКА ({0}): {1}", item.path.name, e))
                 finally:
                     with self._lock:
                         self._procs.pop(key, None)
@@ -1400,9 +1469,9 @@ class ConverterApp:
             return
         done = sum(1 for f in self._batch if f.status in ("ok", "error", "skipped", "cancelled"))
         if len(active) == 1:
-            self.status_text.value = f"{done + 1} из {total} · {active[0].path.name}"
+            self.status_text.value = tr("{0} из {1} · {2}", done + 1, total, active[0].path.name)
         elif active:
-            self.status_text.value = f"{done} из {total} готово · в работе {len(active)}"
+            self.status_text.value = tr("{0} из {1} готово · в работе {2}", done, total, len(active))
 
     def _run_pdf(self, files: list[FileItem], settings: ConversionSettings,
                  out_dir: Optional[Path]) -> None:
@@ -1415,7 +1484,7 @@ class ConverterApp:
         for item in files:
             item.status = "running"
             self._rebuild_tile(item)
-        self.status_text.value = f"Собираю PDF из {len(files)} картинок…"
+        self.status_text.value = tr("Собираю PDF из {0} картинок…", len(files))
         self.page.update()
         ok = 0
         try:
@@ -1423,11 +1492,11 @@ class ConverterApp:
             for item in files:
                 item.status, item.dst = "ok", dst
             ok = len(files)
-            self._log(f"PDF собран: {dst}")
+            self._log(tr("PDF собран: {0}", dst))
         except Exception as e:  # noqa: BLE001
             for item in files:
                 item.status, item.message = "error", str(e)
-            self._log(f"PDF ОШИБКА: {e}")
+            self._log(tr("PDF ОШИБКА: {0}", e))
         for item in files:
             self._rebuild_tile(item)
         self._finish(ok, len(files) - ok, 0, len(files), dst if ok else None, single=dst.name)
@@ -1436,7 +1505,7 @@ class ConverterApp:
                     out_dir: Optional[Path]) -> None:
         first = files[0]
         folder = out_dir or first.path.parent
-        stem = render_name(settings.name_template, first.path, target, 1, settings) + "_склейка"
+        stem = render_name(settings.name_template, first.path, target, 1, settings) + tr("_склейка")
         dst = folder / f"{stem}.{target}"
         i = 1
         while dst.exists():
@@ -1445,7 +1514,7 @@ class ConverterApp:
         for item in files:
             item.status = "running"
             self._rebuild_tile(item)
-        self.status_text.value = f"Склеиваю {len(files)} {files_word(len(files))}…"
+        self.status_text.value = tr("Склеиваю {0} {1}…", len(files), files_word(len(files)))
         self.page.update()
         holder = FileItem(dst)
         holder.duration_s = sum(f.duration_s or 0 for f in files)
@@ -1461,12 +1530,12 @@ class ConverterApp:
                 on_proc=lambda p: self._set_proc(id(holder), p),
                 is_cancelled=self._cancel.is_set,
             )
-            self._log(f"Склеено: {dst}")
+            self._log(tr("Склеено: {0}", dst))
         except ConversionCancelled:
             status = "cancelled"
         except Exception as e:  # noqa: BLE001
             status, message = "error", str(e)
-            self._log(f"СКЛЕЙКА ОШИБКА: {e}")
+            self._log(tr("СКЛЕЙКА ОШИБКА: {0}", e))
         with self._lock:
             self._active.discard(holder)
         for item in files:
@@ -1492,17 +1561,17 @@ class ConverterApp:
 
         elapsed = fmt_time(time.time() - self._run_started)
         if single and ok:
-            summary = f"Готово: {single}"
+            summary = tr("Готово: {0}", single)
         else:
-            summary = f"Готово {ok} из {total}"
+            summary = tr("Готово {0} из {1}", ok, total)
             if failed:
-                summary += f" · ошибок {failed}"
+                summary += tr(" · ошибок {0}", failed)
             if skipped:
-                summary += f" · пропущено {skipped}"
+                summary += tr(" · пропущено {0}", skipped)
             if cancelled:
-                summary += " · отменено"
+                summary += tr(" · отменено")
         self.status_text.value = summary
-        self.eta_text.value = f"Заняло {elapsed}"
+        self.eta_text.value = tr("Заняло {0}", elapsed)
         self.progress.value = 1
         self._set_taskbar_progress(None)
         self._refresh_queue()
@@ -1513,21 +1582,21 @@ class ConverterApp:
         if ok and not cancelled:
             self._celebrate(error=failed > 0)
         if cancelled:
-            self.toast("Конвертация отменена.")
+            self.toast(tr("Конвертация отменена."))
             return
         if failed == 0 and ok:
-            msg = f"Готово! {single}" if single else f"Готово! Сконвертировано: {ok} {files_word(ok)}."
+            msg = tr("Готово! {0}", single) if single else tr("Готово! Сконвертировано: {0} {1}.", ok, files_word(ok))
             self.toast(msg)
         elif ok == 0 and failed:
-            msg = "Не удалось конвертировать ни одного файла."
-            self.toast(msg + " Подробности — в журнале.", error=True)
+            msg = tr("Не удалось конвертировать ни одного файла.")
+            self.toast(msg + tr(" Подробности — в журнале."), error=True)
         else:
             msg = f"{summary}."
-            self.toast(f"{summary}. Можно повторить только ошибки.", error=True)
+            self.toast(tr("{0}. Можно повторить только ошибки.", summary), error=True)
         if self.notify_enabled:
             os_utils.beep()
             if not self._window_focused:
-                os_utils.notify("Конвертер", msg)
+                os_utils.notify(tr("Конвертер"), msg)
 
     def _celebrate(self, error: bool = False) -> None:
         """M3 Expressive "done" moment: a burst shape springs in."""
@@ -1575,7 +1644,7 @@ class ConverterApp:
 
     def _tick(self) -> None:
         if self._paused:
-            self.eta_text.value = "Пауза"
+            self.eta_text.value = tr("Пауза")
             self.page.update()
             return
         elapsed = time.time() - self._run_started
@@ -1595,10 +1664,9 @@ class ConverterApp:
         self._set_taskbar_progress(frac)
         if frac > 0.02 and elapsed > 1:
             remaining = elapsed / frac - elapsed
-            self.eta_text.value = (f"{int(frac * 100)}% · прошло {fmt_time(elapsed)} · "
-                                   f"осталось ~{fmt_time(remaining)}")
+            self.eta_text.value = (tr("{0}% · прошло {1} · осталось ~{2}", int(frac * 100), fmt_time(elapsed), fmt_time(remaining)))
         else:
-            self.eta_text.value = f"Прошло {fmt_time(elapsed)}"
+            self.eta_text.value = tr("Прошло {0}", fmt_time(elapsed))
         for it in active:
             if it.ui:
                 it.ui["bar"].value = it.progress if it.progress > 0 else None
@@ -1613,7 +1681,7 @@ class ConverterApp:
         if not item or not target or self.running:
             return
         self.sample_btn.disabled = True
-        self.sample_btn.content = "Считаю…"
+        self.sample_btn.content = tr("Считаю…")
         self.page.update()
         settings = dataclasses.replace(self.settings, audio_track_index=item.audio_track,
                                        subtitle_track=item.subtitle_track)
@@ -1626,10 +1694,10 @@ class ConverterApp:
                                                   duration_s=item.duration_s, on_log=self._log)
                 dialogs.show_sample_result(self.page, sample, projected, 5, self.open_path)
             except Exception as e:  # noqa: BLE001
-                self.toast(f"Проба не удалась: {humanize_error(str(e))}", error=True)
+                self.toast(tr("Проба не удалась: {0}", humanize_error(str(e))), error=True)
             finally:
                 self.sample_btn.disabled = False
-                self.sample_btn.content = "Проба 5 с"
+                self.sample_btn.content = tr("Проба 5 с")
                 self.page.update()
 
         threading.Thread(target=work, daemon=True).start()
@@ -1653,7 +1721,7 @@ class ConverterApp:
         with self._log_lock:
             text = "\n".join(self._log_lines[-800:])
         self._log_view = ft.TextField(
-            value=text, hint_text="Журнал пока пуст",
+            value=text, hint_text=tr("Журнал пока пуст"),
             multiline=True, min_lines=18, max_lines=18, read_only=True,
             text_size=12, border=ft.InputBorder.NONE,
             text_style=ft.TextStyle(font_family="monospace"),
@@ -1671,18 +1739,18 @@ class ConverterApp:
 
         self.page.show_dialog(ft.AlertDialog(
             icon=ft.Icon(ft.Icons.TERMINAL_ROUNDED),
-            title=ft.Text("Журнал ffmpeg"),
+            title=ft.Text(tr("Журнал ffmpeg")),
             content=ft.Container(
                 width=760, padding=12, border_radius=SHAPE_LARGE,
                 bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
                 content=self._log_view,
             ),
             actions=[
-                ft.TextButton("Скопировать", icon=ft.Icons.CONTENT_COPY_ROUNDED,
+                ft.TextButton(tr("Скопировать"), icon=ft.Icons.CONTENT_COPY_ROUNDED,
                               on_click=lambda _e: self.page.run_task(
                                   self._copy, "\n".join(self._log_lines))),
-                ft.TextButton("Очистить", on_click=clear),
-                ft.FilledTonalButton("Закрыть", on_click=close),
+                ft.TextButton(tr("Очистить"), on_click=clear),
+                ft.FilledTonalButton(tr("Закрыть"), on_click=close),
             ],
             on_dismiss=lambda _e: setattr(self, "_log_view", None),
         ))
@@ -1729,14 +1797,14 @@ class ConverterApp:
             w.width, w.height = 640, 250
             w.always_on_top = True
             self.compact_btn.icon = ft.Icons.OPEN_IN_FULL_ROUNDED
-            self.compact_btn.tooltip = "Обычный режим"
+            self.compact_btn.tooltip = tr("Обычный режим")
         else:
             width, height, min_w, min_h = getattr(self, "_saved_size", (1280, 860, 960, 640))
             w.min_width, w.min_height = min_w, min_h
             w.width, w.height = width, height
             w.always_on_top = False
             self.compact_btn.icon = ft.Icons.PICTURE_IN_PICTURE_ALT_OUTLINED
-            self.compact_btn.tooltip = "Компактный режим поверх окон"
+            self.compact_btn.tooltip = tr("Компактный режим поверх окон")
         self.page.update()
 
     # ============================================================= window
@@ -1777,7 +1845,7 @@ class ConverterApp:
         ))
 
     def open_path(self, path: Optional[Path]) -> None:
-        err = os_utils.open_path(path) if path is not None else "Файл не найден."
+        err = os_utils.open_path(path) if path is not None else tr("Файл не найден.")
         if err:
             self.toast(err, error=True)
 
@@ -1790,9 +1858,15 @@ class ConverterApp:
 
 
 async def main(page: ft.Page) -> None:
+    # The language must be known before any label is built.
+    try:
+        lang = await ft.SharedPreferences().get(PREF_PREFIX + "lang")
+    except Exception:
+        lang = None
+    set_language(lang if isinstance(lang, str) else "en")
     app = ConverterApp(page)
     await app.load_prefs()
 
 
 if __name__ == "__main__":
-    ft.run(main)
+    ft.run(main, assets_dir=str(Path(__file__).resolve().parent / "assets"))
