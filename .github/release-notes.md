@@ -8,6 +8,13 @@
 
 Windows SmartScreen may warn about an unknown publisher because the build is not code-signed: click **More info → Run anyway**.
 
+## What's new in 2.1
+
+- **Material 3 Expressive:** animated backdrop shapes, a morphing loading indicator, springy buttons and a "done" burst.
+- **7 themes** (Lavender, Ocean, Forest, Sunset, Sakura, Mint, Graphite), each with its own animated shapes, plus a pure-black AMOLED mode.
+- **Fonts:** Balsamiq Sans by default, or Google Sans or the system font.
+- **English UI by default.** Russian is in Appearance → Language.
+
 ## What's inside
 
 Image, audio and video converter with a Material You (Material 3) interface: batch queue, presets, trim, watermark, subtitles, joining files, "fit into N MB", parallel jobs, hardware encoding, drag & drop and more. See the [README](https://github.com/alexkonstich-byte/converter#readme) for the full list.
