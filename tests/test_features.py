@@ -179,3 +179,11 @@ def test_heic_input(tmp_path):
     c.convert(src, dst)
     with Image.open(dst) as out:
         assert out.size == (64, 48)
+
+
+def test_find_tool_prefers_bundled_dir(tmp_path, monkeypatch):
+    exe = "ffmpeg.exe" if c.os.name == "nt" else "ffmpeg"
+    (tmp_path / exe).write_bytes(b"")
+    monkeypatch.setenv("CONVERTER_FFMPEG_DIR", str(tmp_path))
+    monkeypatch.setattr(c, "_TOOL_CACHE", {})
+    assert c.find_tool("ffmpeg") == str(tmp_path / exe)

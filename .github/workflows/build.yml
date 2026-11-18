@@ -1,42 +1,127 @@
-name: Build app
+name: Release
 
-# Run manually from the Actions tab, or push a tag like v2.0.0.
+# Push a tag like v2.0.0 to build the apps and publish a GitHub Release.
+# Running it manually (Actions → Release → Run workflow) only uploads artifacts.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: write
+
+env:
+  PYTHONUTF8: "1"
+  PYTHONIOENCODING: utf-8
+
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: windows
-          - os: macos-latest
-            target: macos
-          - os: ubuntu-latest
-            target: linux
-    runs-on: ${{ matrix.os }}
+  windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Linux build dependencies
-        if: matrix.target == 'linux'
+      - name: Version
+        shell: bash
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || v="0.0.0"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Install Flet CLI
+        run: pip install "flet[all]>=1.1.2,<2"
+      - name: Build
+        run: >
+          flet build windows --yes --skip-flutter-doctor --no-rich-output
+          --project converter --product Converter --artifact Converter
+          --build-version ${{ env.VERSION }}
+      - name: Bundle ffmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-dist
+          $bin = (Get-ChildItem ffmpeg-dist -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          Copy-Item "$bin\ffmpeg.exe", "$bin\ffprobe.exe" build\windows\
+          $lic = Get-ChildItem ffmpeg-dist -Recurse -Filter LICENSE.txt | Select-Object -First 1
+          if ($lic) { Copy-Item $lic.FullName build\windows\FFMPEG-LICENSE.txt }
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path build\windows\* -DestinationPath Converter-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Converter-windows-x64
+          path: Converter-windows-x64.zip
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Converter-windows-x64.zip
+          body_path: .github/release-notes.md
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Version
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || v="0.0.0"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Install Flet CLI
+        run: pip install "flet[all]>=1.1.2,<2"
+      - name: Build
+        run: >
+          flet build macos --yes --skip-flutter-doctor --no-rich-output
+          --project converter --product Converter --artifact Converter
+          --build-version ${{ env.VERSION }}
+      - name: Zip
+        run: cd build/macos && ditto -c -k --keepParent Converter.app ../../Converter-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Converter-macos
+          path: Converter-macos.zip
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Converter-macos.zip
+          body_path: .github/release-notes.md
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Version
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF_TYPE" == "tag" ]] || v="0.0.0"
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+      - name: Build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libgtk-3-dev libmpv-dev mpv
       - name: Install Flet CLI
         run: pip install "flet[all]>=1.1.2,<2"
       - name: Build
-        env:
-          PYTHONIOENCODING: utf-8
-          PYTHONUTF8: "1"
-        run: flet build ${{ matrix.target }} --yes --verbose
+        run: >
+          flet build linux --yes --skip-flutter-doctor --no-rich-output
+          --project converter --product Converter --artifact Converter
+          --build-version ${{ env.VERSION }}
+      - name: Archive
+        run: tar -czf Converter-linux-x64.tar.gz -C build linux
       - uses: actions/upload-artifact@v4
         with:
-          name: converter-${{ matrix.target }}
-          path: build/${{ matrix.target }}
+          name: Converter-linux-x64
+          path: Converter-linux-x64.tar.gz
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Converter-linux-x64.tar.gz
+          body_path: .github/release-notes.md

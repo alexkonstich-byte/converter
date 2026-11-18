@@ -22,7 +22,7 @@ dev = ["pytest>=8", "ruff>=0.6"]
 # `flet build windows|macos|linux` — packaged app with OS drag & drop.
 [tool.flet]
 org = "io.github.converter"
-product = "Конвертер"
+product = "Converter"
 company = "converter"
 copyright = "MIT"
 

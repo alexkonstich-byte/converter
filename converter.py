@@ -98,12 +98,52 @@ def formats_for_kind(kind: str) -> list[str]:
     return {"image": IMAGE_FORMATS, "audio": AUDIO_FORMATS, "video": VIDEO_FORMATS}[kind]
 
 
+def _bundled_dirs() -> list[Path]:
+    """Folders next to the app where a bundled ffmpeg may live (release builds)."""
+    dirs: list[Path] = []
+    bases = [Path(sys.executable).resolve().parent, Path(sys.argv[0] or ".").resolve().parent,
+             Path(__file__).resolve().parent]
+    try:  # the real .exe of a `flet build` app (sys.executable may point elsewhere)
+        import psutil
+        bases.insert(0, Path(psutil.Process().exe()).resolve().parent)
+    except Exception:
+        pass
+    for base in bases:
+        for d in (base, base / "ffmpeg", base / "bin", base.parent, base.parent / "ffmpeg"):
+            if d not in dirs:
+                dirs.append(d)
+    return dirs
+
+
+_TOOL_CACHE: dict[str, str] = {}
+
+
+def find_tool(name: str) -> Optional[str]:
+    """Full path to ffmpeg/ffprobe: $CONVERTER_FFMPEG_DIR, next to the app, then PATH."""
+    if name in _TOOL_CACHE:
+        return _TOOL_CACHE[name]
+    exe = name + (".exe" if os.name == "nt" else "")
+    candidates = []
+    env_dir = os.environ.get("CONVERTER_FFMPEG_DIR")
+    if env_dir:
+        candidates.append(Path(env_dir) / exe)
+    candidates += [d / exe for d in _bundled_dirs()]
+    found = next((str(c) for c in candidates if c.is_file()), None) or shutil.which(name)
+    if found:  # don't cache misses: the user may install ffmpeg while the app runs
+        _TOOL_CACHE[name] = found
+    return found
+
+
+def _ffprobe() -> str:
+    return find_tool("ffprobe") or "ffprobe"
+
+
 def ffmpeg_available() -> bool:
-    return shutil.which("ffmpeg") is not None
+    return find_tool("ffmpeg") is not None
 
 
 def ffprobe_available() -> bool:
-    return shutil.which("ffprobe") is not None
+    return find_tool("ffprobe") is not None
 
 
 # Encoder name → ffmpeg encoder. "copy" stream-copies without re-encoding.
@@ -265,7 +305,7 @@ def _run_ffmpeg(
 
     # Never let ffmpeg wait for keyboard input, keep the log readable.
     if args and args[0] == "ffmpeg":
-        args = [args[0], "-hide_banner", "-nostdin", *args[1:]]
+        args = [find_tool("ffmpeg") or "ffmpeg", "-hide_banner", "-nostdin", *args[1:]]
 
     flags = _creationflags()
     if low_priority and os.name == "nt":
@@ -366,7 +406,7 @@ def probe_duration(path: Path) -> Optional[float]:
     try:
         proc = subprocess.run(
             [
-                "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                _ffprobe(), "-v", "error", "-show_entries", "format=duration",
                 "-of", "default=noprint_wrappers=1:nokey=1", str(path),
             ],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -385,7 +425,7 @@ def probe_video_bitrate_kbps(path: Path) -> Optional[int]:
     try:
         proc = subprocess.run(
             [
-                "ffprobe", "-v", "error",
+                _ffprobe(), "-v", "error",
                 "-select_streams", "v:0",
                 "-show_entries", "stream=bit_rate",
                 "-of", "default=noprint_wrappers=1:nokey=1", str(path),
@@ -431,7 +471,7 @@ def probe_streams(path: Path) -> list[StreamInfo]:
     try:
         proc = subprocess.run(
             [
-                "ffprobe", "-v", "error",
+                _ffprobe(), "-v", "error",
                 "-show_entries",
                 "stream=index,codec_name,codec_type,channels:stream_tags=language,title",
                 "-of", "json", str(path),
@@ -493,7 +533,7 @@ def detect_available_encoders() -> set[str]:
         return _HWACCEL_CACHE
     try:
         proc = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
+            [find_tool("ffmpeg") or "ffmpeg", "-hide_banner", "-encoders"],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=10, creationflags=_creationflags(),
         )
@@ -1537,7 +1577,7 @@ def probe_video_size(path: Path) -> Optional[tuple[int, int]]:
         return None
     try:
         proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+            [_ffprobe(), "-v", "error", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=10, creationflags=_creationflags(),

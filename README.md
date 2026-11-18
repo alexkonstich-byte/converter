@@ -1,101 +1,114 @@
-# Универсальный конвертер
+# Converter
 
-Десктопное приложение на Python для конвертации **изображений, аудио и видео**. Интерфейс сделан на Flet 1.x по Material 3 (Material You): палитра строится из одного seed-цвета, есть светлая, тёмная и системная тема.
+**English** · [Русский](README.ru.md)
 
-## Возможности
+A desktop app for converting **images, audio and video**, written in Python. The interface follows Material 3 / Material You (Flet 1.x): the whole palette is generated from one seed color, with light, dark and system themes.
 
-**Форматы**
-- **Изображения** (Pillow): `png`, `jpg`, `webp`, `avif`, `bmp`, `tiff`, `gif`, `ico`, `tga`, `ppm`, `pcx`, `pdf`. На вход также принимаются фото с iPhone (`heic`) и RAW с камер (`dng`, `cr2`, `cr3`, `nef`, `arw`, `orf`, `rw2`, `raf`…).
-- **Аудио** (ffmpeg): `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `wma`, `opus`, `aiff`.
-- **Видео** (ffmpeg): `mp4`, `mkv`, `avi`, `mov`, `webm`, `flv`, `wmv`, `m4v`, `mpeg`, `mpg`, `ts`, плюс качественный GIF. Из видео можно извлечь звук или субтитры (`srt`, `ass`, `vtt`).
+> The interface is in Russian.
 
-**Обработка**
-- Качество, размер и EXIF для картинок. Битрейт, частота и каналы для звука. Кодек H.264/H.265/AV1, CRF или битрейт, разрешение, кадрирование (9:16, 1:1, 4:5…), fps и аппаратное кодирование для видео.
-- **Уложить в размер**: например, видео не больше 25 МБ для Telegram, Discord или почты.
-- **Поворот и отражение**, удаление звука, выравнивание громкости (EBU R128).
-- **Обрезка** по времени, **водяной знак** (с кириллицей).
-- **Субтитры**: вшить в картинку из файла или из самого видео либо добавить отдельной дорожкой.
-- **Склейка** нескольких аудио или видео в один файл, даже с разными разрешениями.
-- Несколько картинок можно собрать в один PDF.
+## Download
 
-**Удобство**
-- Добавление файлов или целой папки (с подпапками). В собранном приложении работает перетаскивание файлов в окно.
-- Порядок в очереди меняется перетаскиванием.
-- Шаблон имени файла (`{name}`, `{n}`, `{date}`, `{height}`…) и сохранение структуры папок.
-- Параллельная конвертация: картинки и аудио по несколько штук сразу.
-- **Пробный рендер 5 секунд** с прогнозом итогового размера, сравнение картинок «до/после».
-- Готовые пресеты (YouTube, Сторис, Telegram, почта, FLAC, MP3 320, веб) и свои.
-- Пауза, отмена, повтор только упавших файлов, понятные описания ошибок, журнал ffmpeg.
-- Прогресс на иконке в панели задач и системное уведомление, когда окно в фоне.
-- Тема, цвет, формат и все настройки запоминаются между запусками.
+Grab the latest build from [**Releases**](https://github.com/alexkonstich-byte/converter/releases/latest):
 
-## Горячие клавиши
+- **Windows 10/11:** `Converter-windows-x64.zip`. Unzip and run `Converter.exe`. ffmpeg is already included.
+- **macOS:** `Converter-macos.zip`. Install ffmpeg with `brew install ffmpeg`.
+- **Linux:** `Converter-linux-x64.tar.gz`. Install `ffmpeg`, `libmpv2` and `zenity`.
 
-| Клавиши | Действие |
+The builds are not code-signed. On Windows choose *More info → Run anyway* if SmartScreen warns. On macOS right-click the app and choose *Open* the first time.
+
+## Features
+
+**Formats**
+- **Images** (Pillow): `png`, `jpg`, `webp`, `avif`, `bmp`, `tiff`, `gif`, `ico`, `tga`, `ppm`, `pcx`, `pdf`. Inputs also include iPhone photos (`heic`) and camera RAW (`dng`, `cr2`, `cr3`, `nef`, `arw`, `orf`, `rw2`, `raf`…).
+- **Audio** (ffmpeg): `mp3`, `wav`, `flac`, `ogg`, `m4a`, `aac`, `wma`, `opus`, `aiff`.
+- **Video** (ffmpeg): `mp4`, `mkv`, `avi`, `mov`, `webm`, `flv`, `wmv`, `m4v`, `mpeg`, `mpg`, `ts`, plus high-quality GIF. You can also extract the audio or the subtitles (`srt`, `ass`, `vtt`) from a video.
+
+**Processing**
+- **Images:** quality, size and EXIF stripping.
+- **Audio:** bitrate, sample rate and channels.
+- **Video:** H.264/H.265/AV1, CRF or bitrate, resolution, crop to 9:16 / 1:1 / 4:5, fps, and hardware encoding (NVENC, Quick Sync, AMF, VideoToolbox).
+- **Fit into N MB:** e.g. a video under 25 MB for Telegram, Discord or e-mail.
+- **Rotate and mirror**, remove audio, loudness normalisation (EBU R128).
+- **Trim** by time and add a **text watermark** (Cyrillic supported).
+- **Subtitles:** burn in from a file or from the video itself, or add them as a switchable track.
+- **Join** several audio or video files into one, even with different resolutions.
+- Combine several images into one PDF.
+
+**Convenience**
+- **Adding files:** add files or a whole folder with sub-folders. In the built app you can also drag files into the window.
+- **Queue:** reorder files by dragging.
+- **Output names:** templates (`{name}`, `{n}`, `{date}`, `{height}`…), optionally keeping the folder structure.
+- **Parallel jobs:** several images or audio files at once.
+- **Preview before committing:** a 5-second test render with a size forecast, and a before/after slider for images.
+- **Presets:** built-in (YouTube, Stories, Telegram, e-mail, FLAC, MP3 320, web) and your own.
+- **Running a batch:** pause, cancel, retry only the failed files. Errors come with plain-language explanations, and the full ffmpeg log is available.
+- **Notifications:** progress on the taskbar icon, and a system notification when the window is in the background.
+- **Memory:** theme, color, format and all settings are kept between launches.
+
+## Keyboard shortcuts
+
+| Keys | Action |
 |---|---|
-| `Ctrl+O` / `Ctrl+Shift+O` | Добавить файлы / папку |
-| `Ctrl+Enter` | Начать конвертацию |
-| `Esc` | Отменить конвертацию / снять выделение |
-| `Delete` | Убрать выбранный файл |
-| `↑` / `↓` | Предыдущий / следующий файл |
-| `Ctrl+L` | Журнал ffmpeg |
-| `F1` | Список горячих клавиш |
+| `Ctrl+O` / `Ctrl+Shift+O` | Add files / folder |
+| `Ctrl+Enter` | Start converting |
+| `Esc` | Cancel / clear selection |
+| `Delete` | Remove the selected file |
+| `↑` / `↓` | Previous / next file |
+| `Ctrl+L` | ffmpeg log |
+| `F1` | Shortcut list |
 
-## Установка
+## Running from source
 
-Нужен Python 3.10+.
+Requires Python 3.10+.
 
 ```bash
 pip install -r requirements.txt
-```
-
-Для аудио и видео нужен **ffmpeg** в `PATH` (картинки работают и без него):
-
-- Windows: `winget install Gyan.FFmpeg` (приложение может запустить установку само)
-- macOS: `brew install ffmpeg`
-- Linux: `sudo apt install ffmpeg`
-
-На Linux для встроенного видеоплеера нужен `libmpv` (`sudo apt install libmpv2`), для выбора файлов — `zenity`.
-
-## Запуск
-
-```bash
 python app.py
 ```
 
-## Сборка в приложение
+Audio and video need **ffmpeg** (images work without it). The app looks for it next to the executable first, then in `PATH`:
+
+- Windows: `winget install Gyan.FFmpeg` (the app can start this for you)
+- macOS: `brew install ffmpeg`
+- Linux: `sudo apt install ffmpeg`
+
+On Linux the built-in video player needs `libmpv` (`sudo apt install libmpv2`) and the file dialogs need `zenity`.
+
+## Building
 
 ```bash
-flet build windows   # или macos / linux
+flet build windows   # or macos / linux
 ```
 
-Готовое приложение появится в `build/<платформа>`, Python для него не нужен. Перетаскивание файлов из проводника работает только в собранной версии. Собрать под все три системы можно и в GitHub Actions: workflow **Build app** запускается вручную или по тегу `v*`.
+The result goes to `build/<platform>` and runs without Python. Drag & drop from the file manager only works in the built app.
 
-## Структура
+Releases are built by GitHub Actions. Push a tag like `v2.0.0` and the **Release** workflow builds Windows, macOS and Linux packages and attaches them to a GitHub Release. The Windows package bundles ffmpeg.
+
+## Project layout
 
 ```
 converter/
-├── app.py             # окно, очередь, запуск конвертации
-├── settings_panel.py  # карточки настроек
-├── preview.py         # предпросмотр и плеер
-├── dialogs.py         # диалоги: горячие клавиши, сравнение, пресеты, проба
-├── ui_kit.py          # тема Material You и общие M3-компоненты
-├── queue_logic.py     # логика очереди без UI (форматы, имена, настройки)
-├── os_utils.py        # открытие файлов, звук, системные уведомления
-├── converter.py       # движок конвертации (Pillow + ffmpeg)
-├── tests/             # тесты (pytest)
-└── pyproject.toml     # зависимости и настройки `flet build`
+├── app.py             # window, queue, running conversions
+├── settings_panel.py  # settings cards
+├── preview.py         # preview and media player
+├── dialogs.py         # shortcuts, before/after, presets, test render
+├── ui_kit.py          # Material You theme and shared M3 components
+├── queue_logic.py     # UI-free queue logic (formats, names, settings)
+├── os_utils.py        # opening files, sounds, system notifications
+├── converter.py       # conversion engine (Pillow + ffmpeg)
+├── tests/             # pytest suite
+└── pyproject.toml     # dependencies and `flet build` settings
 ```
 
-## Тесты
+## Tests
 
 ```bash
 pip install -r requirements-dev.txt
 pytest
 ```
 
-Тестовые медиафайлы генерируются самим ffmpeg; если его нет, видео- и аудиотесты пропускаются.
+Test media is generated by ffmpeg itself. Audio and video tests are skipped when ffmpeg isn't installed.
 
-## Лицензия
+## License
 
-MIT
+MIT. Windows releases include an FFmpeg build licensed under GPL (see `FFMPEG-LICENSE.txt` inside the package).
