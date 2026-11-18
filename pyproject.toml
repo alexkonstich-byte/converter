@@ -12,7 +12,8 @@ dependencies = [
     "flet-dropzone>=0.4.0",
     "Pillow>=11.2",
     "pillow-heif>=0.18",
-    "rawpy>=0.21",
+    # no universal (arm64+x86_64) wheels for the macOS app build
+    "rawpy>=0.21; sys_platform != 'darwin'",
     "psutil>=5.9.0",
 ]
 
