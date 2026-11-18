@@ -16,3 +16,4 @@ Thumbs.db
 
 storage/
 flet_app_storage/
+.pytest_cache/
