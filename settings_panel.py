@@ -12,11 +12,14 @@ from typing import TYPE_CHECKING, Optional
 import flet as ft
 
 from converter import (
+    NAME_TOKENS,
     VIDEO_FORMATS,
     DEFAULT_VIDEO_CODEC_FOR_CONTAINER,
     _DEFAULT_AUDIO_FOR_CONTAINER,
     check_video_compat,
     detect_available_hwaccels,
+    render_name,
+    target_kind,
 )
 from ui_kit import (
     SHAPE_SMALL,
@@ -73,11 +76,14 @@ class SettingsPanel:
         self.image = self._build_image()
         self.audio = self._build_audio()
         self.video = self._build_video()
+        self.transform = self._build_transform()
+        self.subtitles = self._build_subtitles()
         self.trim = self._build_trim()
         self.watermark = self._build_watermark()
         self.output = self._build_output()
-        self.sections = [self.image, self.video, self.audio, self.trim,
-                         self.watermark, self.output]
+        self.sections = [self.image, self.video, self.audio, self.transform,
+                         self.subtitles, self.trim, self.watermark, self.output]
+        self._track_text_focus()
 
     @property
     def s(self):
@@ -85,6 +91,22 @@ class SettingsPanel:
 
     def _changed(self, estimate: bool = True) -> None:
         self.app.on_settings_changed(estimate)
+
+    def _track_text_focus(self) -> None:
+        """Tell the app when a text field has focus (so Delete edits text,
+        not the queue)."""
+        for value in vars(self).values():
+            if isinstance(value, ft.TextField):
+                value.on_focus = lambda _e: self.app.set_text_focus(True)
+                value.on_blur = lambda _e: self.app.set_text_focus(False)
+
+    @staticmethod
+    def _parse_mb(text: str) -> Optional[float]:
+        try:
+            v = float((text or "").replace(",", "."))
+        except ValueError:
+            return None
+        return v if v > 0 else None
 
     # ------------------------------------------------------------- image
     def _build_image(self) -> ft.Container:
@@ -180,8 +202,30 @@ class SettingsPanel:
                       "Выше — только если точно знаете зачем."),
             with_help(self.aud_channels, "Каналы",
                       "Моно — 1, стерео — 2, 5.1 — 6. «Авто» сохраняет как в оригинале."),
+            self._build_audio_size(),
             visible=False,
         )
+
+    def _build_audio_size(self) -> ft.Row:
+        self.aud_size = ft.TextField(
+            label="Уложить в размер", suffix="МБ", hint_text="не ограничивать", dense=True,
+            input_filter=ft.InputFilter(regex_string=r"^[0-9]*[.,]?[0-9]*$"),
+            border_radius=SHAPE_SMALL, on_change=self._on_size,
+            prefix_icon=ft.Icons.SAVE_ALT_ROUNDED,
+        )
+        self.aud_size_row = with_help(
+            self.aud_size, "Уложить в размер",
+            "Битрейт подберётся по длительности так, чтобы файл получился не больше "
+            "указанного. Удобно для лимитов мессенджеров и почты.")
+        return self.aud_size_row
+
+    def _on_size(self, e) -> None:
+        self.s.target_size_mb = self._parse_mb(e.control.value)
+        # keep both size fields (audio / video) in sync
+        for f in (self.aud_size, self.vid_size):
+            if f is not e.control:
+                f.value = e.control.value
+        self._changed()
 
     def _on_audio_bitrate(self, e) -> None:
         v = e.control.value
@@ -218,6 +262,7 @@ class SettingsPanel:
             segments=[
                 ft.Segment(value="crf", label="Качество", icon=ft.Icons.HIGH_QUALITY_OUTLINED),
                 ft.Segment(value="cbr", label="Битрейт", icon=ft.Icons.SPEED_ROUNDED),
+                ft.Segment(value="size", label="Размер", icon=ft.Icons.SAVE_ALT_ROUNDED),
             ],
             on_change=self._on_video_mode,
         )
@@ -245,6 +290,17 @@ class SettingsPanel:
             "Для 4K умножьте на 4.",
         )
         self.vid_bitrate_row.visible = False
+        self.vid_size = ft.TextField(
+            label="Итоговый размер", suffix="МБ", hint_text="например, 25", dense=True,
+            input_filter=ft.InputFilter(regex_string=r"^[0-9]*[.,]?[0-9]*$"),
+            border_radius=SHAPE_SMALL, on_change=self._on_size,
+        )
+        self.vid_size_row = with_help(
+            self.vid_size, "Итоговый размер",
+            "Видеобитрейт рассчитается из длительности, чтобы файл влез в лимит: "
+            "Telegram, Discord (25 МБ), почта. Чем меньше размер и длиннее видео, "
+            "тем ниже качество.")
+        self.vid_size_row.visible = False
         self.vid_res = dropdown(
             "Разрешение", "auto",
             [("auto", "Как в оригинале"), ("480", "480p"), ("720", "720p · HD"),
@@ -304,6 +360,7 @@ class SettingsPanel:
             self.vid_mode_row,
             self.vid_crf_row,
             self.vid_bitrate_row,
+            self.vid_size_row,
             with_help(self.vid_res, "Разрешение",
                       "Высота кадра; ширина считается автоматически. Уменьшение сильно "
                       "экономит место, увеличение бессмысленно."),
@@ -331,10 +388,21 @@ class SettingsPanel:
 
     def _on_video_mode(self, e) -> None:
         mode = e.control.selected[0] if e.control.selected else "crf"
-        self.s.video_bitrate_mode = mode
-        self.vid_crf_row.visible = mode == "crf"
-        self.vid_bitrate_row.visible = mode == "cbr"
+        if mode == "size":
+            self.s.target_size_mb = self._parse_mb(self.vid_size.value)
+        else:
+            self.s.video_bitrate_mode = mode
+            self.s.target_size_mb = None
+        self._show_mode(mode)
         self._changed()
+
+    def _ui_mode(self) -> str:
+        return "size" if self.s.target_size_mb else self.s.video_bitrate_mode
+
+    def _show_mode(self, mode: str, codec_visible: bool = True) -> None:
+        self.vid_crf_row.visible = codec_visible and mode == "crf"
+        self.vid_bitrate_row.visible = codec_visible and mode == "cbr"
+        self.vid_size_row.visible = codec_visible and mode == "size"
 
     def _on_crf(self, e) -> None:
         v = int(e.control.value)
@@ -380,6 +448,109 @@ class SettingsPanel:
             msg = check_video_compat(target, vc, ac)
         self.vid_compat.visible = bool(msg)
         self.vid_compat.content.controls[1].value = msg or ""
+
+    # --------------------------------------------------------- transform
+    def _build_transform(self) -> ft.Container:
+        self.rotate = ft.SegmentedButton(
+            selected=["0"],
+            show_selected_icon=False,
+            segments=[
+                ft.Segment(value="0", label="0°"),
+                ft.Segment(value="90", label="90°", icon=ft.Icons.ROTATE_RIGHT_ROUNDED),
+                ft.Segment(value="180", label="180°"),
+                ft.Segment(value="270", label="270°", icon=ft.Icons.ROTATE_LEFT_ROUNDED),
+            ],
+            on_change=self._on_rotate,
+        )
+        self.rotate_row = with_help(
+            ft.Row([self.rotate]), "Поворот",
+            "Поворот по часовой стрелке. Пригодится для видео, снятого боком на телефон.")
+        self.flip_h_row, self.flip_h = switch_row(
+            "Отразить по горизонтали", self.s.flip_horizontal,
+            lambda e: self._set("flip_horizontal", bool(e.control.value), False))
+        self.flip_v_row, self.flip_v = switch_row(
+            "Отразить по вертикали", self.s.flip_vertical,
+            lambda e: self._set("flip_vertical", bool(e.control.value), False))
+        self.mute_row, self.mute = switch_row(
+            "Убрать звук", self.s.video_mute,
+            lambda e: self._set("video_mute", bool(e.control.value)),
+            "Убрать звук", "В результате останется только картинка.")
+        self.norm_row, self.normalize = switch_row(
+            "Выровнять громкость", self.s.audio_normalize,
+            lambda e: self._set("audio_normalize", bool(e.control.value), False),
+            "Нормализация громкости",
+            "Приводит громкость к стандарту −16 LUFS (как у стримингов): тихие записи "
+            "станут громче, громкие — тише, без искажений.")
+        return section(
+            "Поворот и звук", ft.Icons.TUNE_ROUNDED,
+            self.rotate_row, self.flip_h_row, self.flip_v_row, self.mute_row, self.norm_row,
+            visible=False,
+        )
+
+    def _set(self, name: str, value, estimate: bool = True) -> None:
+        setattr(self.s, name, value)
+        self._changed(estimate)
+
+    def _on_rotate(self, e) -> None:
+        self.s.video_rotate = int(e.control.selected[0]) if e.control.selected else 0
+        self._changed(estimate=False)
+
+    # --------------------------------------------------------- subtitles
+    def _build_subtitles(self) -> ft.Container:
+        self.sub_mode = dropdown(
+            "Режим", "none",
+            [("none", "Не трогать"), ("burn_file", "Вшить из файла в картинку"),
+             ("soft_file", "Добавить из файла отдельной дорожкой"),
+             ("burn_track", "Вшить встроенные субтитры видео")],
+            self._on_sub_mode,
+        )
+        self.sub_file_text = label("Файл не выбран", style=ft.TextThemeStyle.BODY_MEDIUM,
+                                   max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, expand=True)
+        self.sub_file_row = ft.Container(
+            visible=False,
+            padding=ft.Padding.symmetric(horizontal=12, vertical=4),
+            border_radius=SHAPE_SMALL,
+            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+            content=ft.Row(
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(ft.Icons.SUBTITLES_OUTLINED, color=ft.Colors.PRIMARY),
+                    self.sub_file_text,
+                    ft.TextButton("Выбрать", on_click=lambda _e: self.app.page.run_task(
+                        self.app.pick_subtitle_file)),
+                ],
+            ),
+        )
+        self.sub_track_hint = label(
+            "Какую дорожку вшить, можно выбрать в предпросмотре видео.", visible=False)
+        return section(
+            "Субтитры", ft.Icons.SUBTITLES_OUTLINED,
+            with_help(self.sub_mode, "Субтитры",
+                      "«Вшить» — текст становится частью картинки и виден везде. "
+                      "«Отдельной дорожкой» — субтитры можно включать и выключать в плеере "
+                      "(MKV, MP4, MOV, WebM). Чтобы просто вытащить субтитры из видео, "
+                      "выберите формат SRT, ASS или VTT."),
+            self.sub_file_row,
+            self.sub_track_hint,
+            visible=False,
+        )
+
+    def _on_sub_mode(self, e) -> None:
+        v = e.control.value
+        self.s.subtitle_mode = None if v == "none" else v
+        self._refresh_sub_rows()
+        self._changed(estimate=False)
+
+    def _refresh_sub_rows(self) -> None:
+        mode = self.s.subtitle_mode
+        self.sub_file_row.visible = mode in ("burn_file", "soft_file")
+        self.sub_track_hint.visible = mode == "burn_track"
+        f = self.s.subtitle_file
+        self.sub_file_text.value = f.replace("\\", "/").rsplit("/", 1)[-1] if f else "Файл не выбран"
+
+    def set_subtitle_file(self, path: str) -> None:
+        self.s.subtitle_file = path
+        self._refresh_sub_rows()
 
     # -------------------------------------------------------------- trim
     def _build_trim(self) -> ft.Container:
@@ -442,7 +613,7 @@ class SettingsPanel:
         )
         return section(
             "Водяной знак", ft.Icons.BRANDING_WATERMARK_OUTLINED,
-            self.wm_text,
+            full_width(self.wm_text),
             full_width(self.wm_position),
             ft.Column(spacing=0, controls=[
                 label("Непрозрачность"),
@@ -512,20 +683,86 @@ class SettingsPanel:
             "зато компьютер не тормозит — можно работать или играть параллельно.",
         )
         sound_row, self.sound_switch = switch_row(
-            "Звук по завершении", self.app.notify_enabled, self._on_sound)
+            "Звук и уведомление в конце", self.app.notify_enabled, self._on_sound,
+            "Уведомление",
+            "Когда очередь готова — короткий звук, а если окно свёрнуто или в фоне, "
+            "ещё и системное уведомление.")
+        self.template = ft.TextField(
+            label="Имя файла", value=self.s.name_template, dense=True,
+            border_radius=SHAPE_SMALL, on_change=self._on_template,
+            prefix_icon=ft.Icons.DRIVE_FILE_RENAME_OUTLINE_ROUNDED,
+        )
+        self.template_example = label("")
+        tokens = ft.Row(wrap=True, spacing=6, run_spacing=6, controls=[
+            ft.Chip(label=tok, tooltip=desc, on_click=lambda _e, t=tok: self._add_token(t))
+            for tok, desc in NAME_TOKENS.items()
+        ])
+        self.structure_row, self.structure_switch = switch_row(
+            "Сохранять структуру папок", self.s.keep_structure, self._on_structure,
+            "Структура папок",
+            "Если вы добавили целую папку, в папке вывода повторятся её подпапки. "
+            "Работает, когда выбрана отдельная папка для сохранения.")
+        self.structure_row.visible = False
+        self.jobs = dropdown(
+            "Одновременно", "0",
+            [("0", "Авто"), ("1", "По одному"), ("2", "2 файла"), ("4", "4 файла"),
+             ("8", "8 файлов")],
+            lambda e: self.app.set_jobs(int(e.control.value)),
+        )
+        self.concat_row, self.concat_switch = switch_row(
+            "Склеить в один файл", False, lambda e: self.app.set_concat(bool(e.control.value)),
+            "Склейка",
+            "Все файлы очереди соединятся по порядку в один. Порядок меняется "
+            "перетаскиванием в очереди. Разные разрешения и частоты приводятся к первому файлу.")
+        self.concat_row.visible = False
         return section(
             "Сохранение", ft.Icons.SAVE_OUTLINED,
             folder_tile,
+            self.structure_row,
+            with_help(self.template, "Шаблон имени",
+                      "Из чего собрать имя готового файла. Нажмите на метку ниже, чтобы "
+                      "вставить её. Расширение добавится само."),
+            tokens,
+            self.template_example,
             with_help(self.overwrite, "Если файл уже есть",
                       "Что делать, если в папке уже лежит файл с таким именем. "
                       "По умолчанию добавляется суффикс _1, _2…"),
             with_help(self.checksum, "Контрольная сумма",
                       "Хэш готового файла — чтобы потом проверить, что он не побился при "
                       "копировании. MD5 быстрее, SHA-256 надёжнее."),
+            with_help(self.jobs, "Одновременная конвертация",
+                      "Сколько файлов обрабатывать параллельно. «Авто»: картинки — по числу "
+                      "ядер, аудио — несколько сразу, видео — по одному (ffmpeg и так "
+                      "загружает все ядра)."),
+            self.concat_row,
             meta_row,
             prio_row,
             sound_row,
         )
+
+    def _on_template(self, e) -> None:
+        self.s.name_template = e.control.value or "{name}"
+        self.refresh_template_example()
+        self._changed(estimate=False)
+
+    def _add_token(self, token: str) -> None:
+        cur = self.template.value or ""
+        self.template.value = (cur + ("_" if cur and not cur.endswith(("_", "-", " ")) else "")
+                               + token)
+        self.s.name_template = self.template.value
+        self.refresh_template_example()
+        self._changed(estimate=False)
+
+    def refresh_template_example(self) -> None:
+        from pathlib import Path
+        item = self.app.selected or (self.app.files[0] if self.app.files else None)
+        src = item.path if item else Path("Отпуск.mov")
+        target = self.app.target_ext or "mp4"
+        self.template_example.value = (
+            f"Пример: {render_name(self.s.name_template, src, target, 1, self.s)}.{target}")
+
+    def _on_structure(self, e) -> None:
+        self.s.keep_structure = bool(e.control.value)
 
     def _on_overwrite(self, e) -> None:
         self.s.overwrite_mode = e.control.value
@@ -546,6 +783,7 @@ class SettingsPanel:
     def show_out_dir(self, path) -> None:
         self.out_path.value = str(path) if path else "Рядом с исходными файлами"
         self.out_reset.visible = path is not None
+        self.structure_row.visible = path is not None and self.app.has_folder_items()
 
     # ------------------------------------------------------------ sync
     def sync(self) -> None:
@@ -564,12 +802,13 @@ class SettingsPanel:
 
         self.vid_codec.value = s.video_codec or "auto"
         self.vid_audio_codec.value = s.audio_codec_for_video or "auto"
-        self.vid_mode.selected = [s.video_bitrate_mode]
+        self.vid_mode.selected = [self._ui_mode()]
         self.vid_crf.value = max(14, min(35, s.video_crf))
         self.vid_crf_text.value = f"CRF {s.video_crf}"
         self.vid_bitrate.value = f"{s.video_bitrate_kbps / 1000:g}"
-        self.vid_crf_row.visible = s.video_bitrate_mode == "crf"
-        self.vid_bitrate_row.visible = s.video_bitrate_mode == "cbr"
+        size_txt = f"{s.target_size_mb:g}" if s.target_size_mb else ""
+        self.vid_size.value = self.aud_size.value = size_txt
+        self._show_mode(self._ui_mode())
         self.vid_res.value = str(s.video_height) if s.video_height else "auto"
         self.vid_aspect.value = s.video_aspect or "auto"
         self.vid_fps.value = str(s.video_fps) if s.video_fps else "auto"
@@ -578,6 +817,17 @@ class SettingsPanel:
         self.trim_start.value = format_time(s.trim_start_s)
         self.trim_end.value = format_time(s.trim_end_s)
         self.trim_start.error = self.trim_end.error = None
+
+        self.rotate.selected = [str(s.video_rotate % 360)]
+        self.flip_h.value = s.flip_horizontal
+        self.flip_v.value = s.flip_vertical
+        self.mute.value = s.video_mute
+        self.normalize.value = s.audio_normalize
+        self.sub_mode.value = s.subtitle_mode or "none"
+        self._refresh_sub_rows()
+        self.template.value = s.name_template
+        self.structure_switch.value = s.keep_structure
+        self.refresh_template_example()
 
         self.wm_text.value = s.watermark_text or ""
         self.wm_position.value = s.watermark_position
@@ -591,28 +841,36 @@ class SettingsPanel:
 
     def update_visibility(self, kinds: set[str], target_ext: Optional[str]) -> None:
         """Show only the sections that will actually affect this conversion."""
-        from converter import media_kind
-
-        target_kind = media_kind(target_ext) if target_ext else None
+        tk = target_kind(target_ext) if target_ext else None
         to_gif = target_ext == "gif" and "video" in kinds
-        to_video = "video" in kinds and (target_kind == "video" or to_gif)
-        to_audio = target_kind == "audio"
+        to_subs = tk == "subtitle"
+        to_video = "video" in kinds and (tk == "video" or to_gif)
+        to_audio = tk == "audio"
+        to_image = "image" in kinds and tk == "image" and not to_gif
         has_av = bool(kinds & {"audio", "video"})
 
-        self.image.visible = "image" in kinds and target_kind == "image" and not to_gif
+        self.image.visible = to_image
         self.video.visible = to_video
         # GIF has no sound, so audio settings only for real audio/video outputs.
         self.audio.visible = has_av and (to_audio or (to_video and not to_gif))
-        self.trim.visible = has_av and (to_audio or to_video)
-        self.watermark.visible = ("image" in kinds and target_kind == "image"
-                                  and target_ext != "pdf") or to_video
+        self.aud_size_row.visible = to_audio
+        self.trim.visible = has_av and (to_audio or to_video or to_subs)
+        self.watermark.visible = (to_image and target_ext != "pdf") or to_video
+        self.subtitles.visible = to_video and not to_gif
+
+        self.transform.visible = to_image or to_video or (has_av and to_audio)
+        geometric = to_image or to_video
+        self.rotate_row.visible = self.flip_h_row.visible = self.flip_v_row.visible = geometric
+        self.mute_row.visible = to_video and not to_gif
+        self.norm_row.visible = has_av and (to_audio or (to_video and not to_gif))
+
         # Codec choices make no sense for GIF.
-        gif_hidden = not to_gif
+        codec_visible = not to_gif
         for row in (self.vid_codec_row, self.vid_audio_codec_row,
                     self.vid_mode_row, self.vid_hw_row):
-            row.visible = gif_hidden
-        self.vid_crf_row.visible = gif_hidden and self.s.video_bitrate_mode == "crf"
-        self.vid_bitrate_row.visible = gif_hidden and self.s.video_bitrate_mode == "cbr"
+            row.visible = codec_visible
+        self._show_mode(self._ui_mode(), codec_visible)
         self.refresh_compat()
         if to_gif:
             self.vid_compat.visible = False
+        self.refresh_template_example()

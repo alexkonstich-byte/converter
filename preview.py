@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Optional
 import flet as ft
 from PIL import Image
 
-from converter import extract_video_thumbnail
+from converter import extract_video_thumbnail, humanize_error
 from ui_kit import KIND_LABEL, SHAPE_LARGE, SHAPE_MEDIUM, fmt_time, human_size, label
 
 try:
@@ -142,10 +142,18 @@ class PreviewPane:
             border_radius=8, on_select=self._on_track, expand=True,
             leading_icon=ft.Icons.AUDIOTRACK_OUTLINED,
         )
+        self.sub_dropdown = ft.Dropdown(
+            label="Субтитры", dense=True, visible=False,
+            border_radius=8, on_select=self._on_sub_track, expand=True,
+            leading_icon=ft.Icons.SUBTITLES_OUTLINED,
+        )
         self.open_btn = ft.TextButton(
             "Открыть", icon=ft.Icons.OPEN_IN_NEW_ROUNDED, visible=False,
             on_click=lambda _e: self.item and self.app.open_path(self.item.path),
         )
+
+        # Header buttons; the app appends its own (e.g. "test render").
+        self.actions = ft.Row([self.open_btn], spacing=0, tight=True)
 
         self.control = ft.Container(
             padding=20,
@@ -159,7 +167,7 @@ class PreviewPane:
                         controls=[
                             ft.Icon(ft.Icons.VISIBILITY_OUTLINED, color=ft.Colors.PRIMARY),
                             ft.Column([self.title, self.subtitle], spacing=0, expand=True),
-                            self.open_btn,
+                            self.actions,
                         ],
                     ),
                     ft.Container(
@@ -178,7 +186,7 @@ class PreviewPane:
                             ],
                         ),
                     ),
-                    ft.Row([self.track_dropdown]),
+                    ft.Row([self.track_dropdown, self.sub_dropdown]),
                 ],
             ),
         )
@@ -191,6 +199,7 @@ class PreviewPane:
         for c in (self.image, self.video_slot, self.audio_panel, self.loading):
             c.visible = False
         self.track_dropdown.visible = False
+        self.sub_dropdown.visible = False
         self.open_btn.visible = False
         self.placeholder.visible = item is None
 
@@ -231,8 +240,18 @@ class PreviewPane:
         """Fill the per-file audio-track picker once the probe has finished."""
         item = self.item
         if not item or item.kind != "video":
-            self.track_dropdown.visible = False
+            self.track_dropdown.visible = self.sub_dropdown.visible = False
             return
+        subs = [t for t in item.streams if t.kind == "subtitle"]
+        self.sub_dropdown.visible = bool(subs)
+        if subs:
+            self.sub_dropdown.options = [
+                ft.DropdownOption(key=str(t.index), text=f"#{n} · {t.label}")
+                for n, t in enumerate(subs, start=1)
+            ]
+            chosen = item.subtitle_track if any(t.index == item.subtitle_track for t in subs) \
+                else subs[0].index
+            self.sub_dropdown.value = str(chosen)
         tracks = [t for t in item.streams if t.kind == "audio"]
         if len(tracks) < 2:
             self.track_dropdown.visible = False
@@ -263,7 +282,8 @@ class PreviewPane:
             self.loading.visible = False
             if err is not None:
                 self.placeholder.visible = True
-                self.placeholder.content.controls[1].value = f"Не удалось показать: {err}"
+                self.placeholder.content.controls[1].value = (
+                    f"Не удалось показать: {humanize_error(str(err))}")
             else:
                 consumer(data)
             self.app.page.update()
@@ -274,6 +294,10 @@ class PreviewPane:
         self.image.src = data
         self.image.visible = True
         self.placeholder.visible = False
+
+    def _on_sub_track(self, e) -> None:
+        if self.item and e.control.value:
+            self.item.subtitle_track = int(e.control.value)
 
     def _on_track(self, e) -> None:
         if self.item:

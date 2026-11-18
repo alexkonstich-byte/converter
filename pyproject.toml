@@ -1,0 +1,35 @@
+[project]
+name = "converter"
+version = "2.0.0"
+description = "Универсальный конвертер картинок, аудио и видео (Material You)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "flet>=1.1.2,<2",
+    "flet-audio>=1.1.2,<2",
+    "flet-video>=1.1.2,<2",
+    "flet-dropzone>=0.4.0",
+    "Pillow>=11.2",
+    "pillow-heif>=0.18",
+    "rawpy>=0.21",
+    "psutil>=5.9.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+# `flet build windows|macos|linux` — packaged app with OS drag & drop.
+[tool.flet]
+org = "io.github.converter"
+product = "Конвертер"
+company = "converter"
+copyright = "MIT"
+
+[tool.flet.app]
+path = "."
+module = "app"
+exclude = ["tests", ".github", "build", "dist"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

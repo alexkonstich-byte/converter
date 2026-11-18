@@ -5,9 +5,14 @@ flet[all]>=1.1.2,<2
 # app falls back to a thumbnail).
 flet-audio>=1.1.2,<2
 flet-video>=1.1.2,<2
+# Drag & drop of files from the OS — works in the app built with `flet build`.
+flet-dropzone>=0.4.0
 
 # Pillow 11.2+ reads and writes AVIF natively.
 Pillow>=11.2
+# iPhone photos (HEIC/HEIF) and camera RAW files as inputs.
+pillow-heif>=0.18
+rawpy>=0.21
 
 # Suspend/resume the running ffmpeg (Pause button).
 psutil>=5.9.0
