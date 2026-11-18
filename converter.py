@@ -1,6 +1,8 @@
 """Conversion engine: images via Pillow, audio/video via ffmpeg."""
 from __future__ import annotations
 
+import dataclasses
+import datetime
 import hashlib
 import json
 import os
@@ -43,10 +45,43 @@ VIDEO_FORMATS = [
     "mp4", "mkv", "avi", "mov", "webm", "flv", "wmv", "m4v", "mpeg", "mpg", "ts",
 ]
 
+# Subtitles can be extracted from a video (target only).
+SUBTITLE_FORMATS = ["srt", "ass", "vtt"]
+
 ALL_FORMATS = sorted(set(IMAGE_FORMATS + AUDIO_FORMATS + VIDEO_FORMATS))
+
+# Read-only image inputs: iPhone photos (HEIC) and camera RAW files.
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIF_INPUTS = ["heic", "heif"]
+except ImportError:
+    HEIF_INPUTS = []
+try:
+    import rawpy
+    RAW_INPUTS = ["dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "raf", "pef", "srw"]
+except ImportError:
+    rawpy = None
+    RAW_INPUTS = []
+IMAGE_INPUT_FORMATS = IMAGE_FORMATS + HEIF_INPUTS + RAW_INPUTS
+AUDIO_INPUT_FORMATS = AUDIO_FORMATS + ["m4b", "amr", "ac3", "mka", "wv"]
+VIDEO_INPUT_FORMATS = VIDEO_FORMATS + ["3gp", "mts", "m2ts", "vob", "ogv", "divx", "f4v", "asf"]
 
 
 def media_kind(ext: str) -> Optional[str]:
+    """Kind of a file we can READ (inputs are a superset of outputs)."""
+    ext = ext.lower().lstrip(".")
+    if ext in IMAGE_INPUT_FORMATS:
+        return "image"
+    if ext in AUDIO_INPUT_FORMATS:
+        return "audio"
+    if ext in VIDEO_INPUT_FORMATS:
+        return "video"
+    return None
+
+
+def target_kind(ext: str) -> Optional[str]:
+    """Kind of a format we can WRITE."""
     ext = ext.lower().lstrip(".")
     if ext in IMAGE_FORMATS:
         return "image"
@@ -54,6 +89,8 @@ def media_kind(ext: str) -> Optional[str]:
         return "audio"
     if ext in VIDEO_FORMATS:
         return "video"
+    if ext in SUBTITLE_FORMATS:
+        return "subtitle"
     return None
 
 
@@ -136,6 +173,21 @@ class ConversionSettings:
     video_height: Optional[int] = None        # None = keep / 480 / 720 / 1080 / 2160
     video_aspect: Optional[str] = None        # None = keep / "9:16" / "1:1" / "16:9" (center crop)
 
+    video_rotate: int = 0                     # 0 / 90 / 180 / 270 (clockwise) — images too
+    flip_horizontal: bool = False             # mirror — images too
+    flip_vertical: bool = False
+    video_mute: bool = False                  # drop the audio track
+    # Size target: overrides bitrate so the result fits (MB). Video and audio.
+    target_size_mb: Optional[float] = None
+
+    # Audio processing
+    audio_normalize: bool = False             # EBU R128 loudness normalisation
+
+    # Subtitles (video → video)
+    subtitle_mode: Optional[str] = None       # None / "burn_file" / "soft_file" / "burn_track"
+    subtitle_file: Optional[str] = None       # .srt/.ass/.vtt for *_file modes
+    subtitle_track: Optional[int] = None      # stream index for burn_track / extraction
+
     # Hardware acceleration
     hwaccel: Optional[str] = None             # None=CPU / "nvenc" / "qsv" / "amf" / "videotoolbox"
 
@@ -157,6 +209,8 @@ class ConversionSettings:
     overwrite_mode: str = "rename"            # "rename" / "overwrite" / "skip"
     low_priority: bool = False                # run ffmpeg with reduced CPU priority
     compute_checksum: Optional[str] = None    # None / "md5" / "sha256"
+    name_template: str = "{name}"             # see render_name()
+    keep_structure: bool = False              # mirror sub-folders of an added folder
 
 
 def default_settings() -> ConversionSettings:
@@ -625,6 +679,7 @@ def _convert_animated(img: Image.Image, dst: Path, target: str,
     for frame in ImageSequence.Iterator(img):
         durations.append(int(frame.info.get("duration", img.info.get("duration", 100)) or 100))
         f = frame.convert("RGBA")
+        f = _orient_image(f, settings)
         f = _resize_image(f, settings)
         f = _stamp_watermark(f, settings)
         frames.append(f)
@@ -644,16 +699,42 @@ def _convert_animated(img: Image.Image, dst: Path, target: str,
     frames[0].save(dst, **save_kwargs)
 
 
+def open_image(src: Path) -> Image.Image:
+    """Image.open that also understands camera RAW files (via rawpy)."""
+    if rawpy is not None and src.suffix.lower().lstrip(".") in RAW_INPUTS:
+        with rawpy.imread(str(src)) as raw:
+            rgb = raw.postprocess(use_camera_wb=True, output_bps=8)
+        return Image.fromarray(rgb)
+    return Image.open(src)
+
+
+def _orient_image(img: Image.Image, settings: ConversionSettings) -> Image.Image:
+    """Rotate clockwise / mirror according to settings."""
+    rot = settings.video_rotate % 360
+    if rot == 90:
+        img = img.transpose(Image.Transpose.ROTATE_270)
+    elif rot == 180:
+        img = img.transpose(Image.Transpose.ROTATE_180)
+    elif rot == 270:
+        img = img.transpose(Image.Transpose.ROTATE_90)
+    if settings.flip_horizontal:
+        img = img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+    if settings.flip_vertical:
+        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    return img
+
+
 def _convert_image(src: Path, dst: Path, settings: ConversionSettings) -> None:
     target = dst.suffix.lower().lstrip(".")
     # Context manager closes the source handle (Windows keeps files locked otherwise).
-    with Image.open(src) as img:
+    with open_image(src) as img:
         exif = img.info.get("exif")
         if getattr(img, "is_animated", False) and target in ("gif", "webp"):
             _convert_animated(img, dst, target, settings)
             return
 
         img.load()
+        img = _orient_image(img, settings)
         img = _resize_image(img, settings)
         img = _stamp_watermark(img, settings)
 
@@ -692,9 +773,10 @@ def images_to_pdf(srcs: list[Path], dst: Path, settings: ConversionSettings) -> 
         raise ConversionError("Нет картинок для PDF.")
     pages: list[Image.Image] = []
     for src in srcs:
-        with Image.open(src) as img:
+        with open_image(src) as img:
             img.load()
-            page = _stamp_watermark(_resize_image(img, settings), settings)
+            page = _orient_image(img, settings)
+            page = _stamp_watermark(_resize_image(page, settings), settings)
             pages.append(_flatten_alpha(page))
     dst.parent.mkdir(parents=True, exist_ok=True)
     pages[0].save(dst, save_all=True, append_images=pages[1:], format="PDF")
@@ -740,6 +822,16 @@ def _audio_format_args(settings: ConversionSettings) -> list[str]:
     if settings.audio_channels:
         args += ["-ac", str(settings.audio_channels)]
     return args
+
+
+LOUDNORM_FILTER = "loudnorm=I=-16:TP=-1.5:LRA=11"
+
+
+def _audio_filter_args(settings: ConversionSettings, codec_args: list[str]) -> list[str]:
+    """Loudness normalisation (impossible with stream copy)."""
+    if settings.audio_normalize and "copy" not in codec_args:
+        return ["-af", LOUDNORM_FILTER]
+    return []
 
 
 def _metadata_args(settings: ConversionSettings) -> list[str]:
@@ -810,11 +902,12 @@ def _convert_audio(
     args += ["-vn", "-sn"]
 
     if target == "wav":
-        args += ["-c:a", "pcm_s16le", *_audio_format_args(settings)]
+        codec = ["-c:a", "pcm_s16le", *_audio_format_args(settings)]
     elif target == "aiff":
-        args += ["-c:a", "pcm_s16be", *_audio_format_args(settings)]
+        codec = ["-c:a", "pcm_s16be", *_audio_format_args(settings)]
     else:
-        args += _audio_codec_args(_AUDIO_TARGET_CODEC.get(target, "aac"), settings)
+        codec = _audio_codec_args(_AUDIO_TARGET_CODEC.get(target, "aac"), settings)
+    args += codec + _audio_filter_args(settings, codec)
 
     args += _metadata_args(settings)
     args.append(str(dst))
@@ -973,8 +1066,42 @@ def _scale_filter(height: int, aspect: Optional[str]) -> str:
     return f"scale=-2:{height}:flags=lanczos"
 
 
-def _video_filter(settings: ConversionSettings, textfile: Optional[Path]) -> Optional[str]:
-    parts: list[str] = []
+def _orient_filters(settings: ConversionSettings) -> list[str]:
+    rot = settings.video_rotate % 360
+    parts = {90: ["transpose=1"], 180: ["hflip", "vflip"], 270: ["transpose=2"]}.get(rot, [])
+    if settings.flip_horizontal:
+        parts.append("hflip")
+    if settings.flip_vertical:
+        parts.append("vflip")
+    return parts
+
+
+def _subtitle_burn_filter(src: Path, settings: ConversionSettings) -> Optional[str]:
+    """subtitles= filter for burning text into the picture (needs libass)."""
+    mode = settings.subtitle_mode
+    if mode == "burn_file" and settings.subtitle_file:
+        f = f"subtitles=filename='{_escape_filter_path(str(settings.subtitle_file))}'"
+    elif mode == "burn_track":
+        subs = [st for st in probe_streams(src) if st.kind == "subtitle"]
+        rel = next((n for n, st in enumerate(subs) if st.index == settings.subtitle_track), 0)
+        if not subs:
+            raise ConversionError("В видео нет встроенных субтитров, вшивать нечего.")
+        f = f"subtitles=filename='{_escape_filter_path(str(src))}':si={rel}"
+    else:
+        return None
+    start = settings.trim_start_s or 0
+    if start > 0:
+        # Input -ss resets timestamps to 0, but the subtitle file still starts
+        # at the original 0 — shift the clock for the filter and back.
+        f = f"setpts=PTS+{start:.3f}/TB,{f},setpts=PTS-STARTPTS"
+    return f
+
+
+def _video_filter(settings: ConversionSettings, textfile: Optional[Path],
+                  subtitle_filter: Optional[str] = None) -> Optional[str]:
+    parts: list[str] = _orient_filters(settings)
+    if subtitle_filter:
+        parts.append(subtitle_filter)
     crop = _aspect_crop_filter(settings.video_aspect)
     if crop:
         parts.append(crop)
@@ -1018,7 +1145,7 @@ def _convert_gif(src, dst, settings, on_log, on_progress, duration_s, on_proc, i
     scale = f"scale=-2:{min(height, 720)}" if height else "scale=480:-2"
     trim = _trim_input_args(settings)
     with _WatermarkFile(settings) as wm:
-        base = [f"fps={fps}"]
+        base = [f"fps={fps}", *_orient_filters(settings)]
         crop = _aspect_crop_filter(settings.video_aspect)
         if crop:
             base.append(crop)
@@ -1068,6 +1195,10 @@ def _convert_video(
         return _convert_audio(src, dst, settings, on_log, on_progress, duration_s,
                               on_proc, is_cancelled)
 
+    if target in SUBTITLE_FORMATS:
+        return _extract_subtitles(src, dst, settings, on_log, on_progress, duration_s,
+                                  on_proc, is_cancelled)
+
     # GIF — palette path (no audio).
     if target == "gif":
         return _convert_gif(src, dst, settings, on_log, on_progress, duration_s,
@@ -1086,28 +1217,69 @@ def _convert_video(
     if problem:
         raise ConversionError(problem)
 
-    args = ["ffmpeg", "-y", *_trim_input_args(settings), "-i", str(src)]
+    trim = _trim_input_args(settings)
+    args = ["ffmpeg", "-y", *trim, "-i", str(src)]
+
+    # Soft subtitles from a file → second input.
+    sub_codec = None
+    if settings.subtitle_mode == "soft_file" and settings.subtitle_file:
+        sub_codec = _SOFT_SUB_CODEC.get(target)
+        if sub_codec is None:
+            raise ConversionError(
+                f".{target} не умеет хранить отключаемые субтитры. Выберите MKV, MP4, MOV "
+                "или WebM — либо вшейте субтитры в картинку.")
+        args += [*trim, "-i", str(settings.subtitle_file)]
 
     # Video + one audio track ("?" = don't fail on silent videos).
-    track = _valid_audio_track(src, settings, on_log)
-    args += ["-map", "0:v:0", "-map", f"0:{track}" if track is not None else "0:a:0?"]
+    args += ["-map", "0:v:0"]
+    if not settings.video_mute:
+        track = _valid_audio_track(src, settings, on_log)
+        args += ["-map", f"0:{track}" if track is not None else "0:a:0?"]
+    if sub_codec:
+        args += ["-map", "1:0", "-c:s", sub_codec]
 
-    args += _video_codec_args(video_codec, settings)
-    args += _audio_codec_args(audio_codec, settings)
+    if settings.video_mute:
+        audio_args = ["-an"]
+    else:
+        if settings.audio_normalize and audio_codec == "copy":
+            audio_codec = _DEFAULT_AUDIO_FOR_CONTAINER.get(target, "aac")
+        audio_args = _audio_codec_args(audio_codec, settings)
+        audio_args += _audio_filter_args(settings, audio_args)
 
     with _WatermarkFile(settings) as wm:
-        vf = _video_filter(settings, wm)
+        vf = _video_filter(settings, wm, _subtitle_burn_filter(src, settings))
+        tail = []
         if vf:
-            args += ["-vf", vf]
-
+            tail += ["-vf", vf]
         if target in ("mp4", "m4v", "mov"):
-            args += ["-movflags", "+faststart"]
+            tail += ["-movflags", "+faststart"]
+        tail += _metadata_args(settings)
 
-        args += _metadata_args(settings)
+        args += _video_codec_args(video_codec, settings) + audio_args + tail
         args.append(str(dst))
         _run_ffmpeg(args, on_log=on_log, on_progress=on_progress, duration_s=duration_s,
                     on_proc=on_proc, low_priority=settings.low_priority,
                     is_cancelled=is_cancelled)
+
+
+_SOFT_SUB_CODEC = {
+    "mkv": "srt", "mp4": "mov_text", "m4v": "mov_text", "mov": "mov_text", "webm": "webvtt",
+}
+
+
+def _extract_subtitles(src, dst, settings, on_log, on_progress, duration_s, on_proc,
+                       is_cancelled) -> None:
+    subs = [st for st in probe_streams(src) if st.kind == "subtitle"]
+    if not subs:
+        raise ConversionError("В этом видео нет субтитров.")
+    idx = settings.subtitle_track if any(st.index == settings.subtitle_track for st in subs) \
+        else subs[0].index
+    _run_ffmpeg(
+        ["ffmpeg", "-y", *_trim_input_args(settings), "-i", str(src), "-map", f"0:{idx}",
+         str(dst)],
+        on_log=on_log, on_progress=on_progress, duration_s=duration_s, on_proc=on_proc,
+        is_cancelled=is_cancelled,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1156,7 +1328,7 @@ def convert(
     settings = settings or default_settings()
 
     src_kind = media_kind(src.suffix)
-    dst_kind = media_kind(dst.suffix)
+    dst_kind = target_kind(dst.suffix)
     if src_kind is None:
         raise ConversionError(f"Неизвестный исходный формат: {src.suffix}")
     if dst_kind is None:
@@ -1164,12 +1336,14 @@ def convert(
 
     existed_before = dst.exists()
     duration = effective_duration(duration_s, settings)
+    settings = apply_target_size(settings, duration, dst.suffix)
     try:
         if src_kind == "image" and dst_kind == "image":
             _convert_image(src, dst, settings)
         elif src_kind == "audio" and dst_kind == "audio":
             _convert_audio(src, dst, settings, on_log, on_progress, duration, on_proc, is_cancelled)
-        elif src_kind == "video" and (dst_kind in ("video", "audio") or dst.suffix.lower() == ".gif"):
+        elif src_kind == "video" and (dst_kind in ("video", "audio", "subtitle")
+                                      or dst.suffix.lower() == ".gif"):
             _convert_video(src, dst, settings, on_log, on_progress, duration, on_proc, is_cancelled)
         else:
             raise ConversionError(
@@ -1182,6 +1356,27 @@ def convert(
             except OSError:
                 pass
         raise
+
+
+def apply_target_size(settings: ConversionSettings, duration_s: Optional[float],
+                      dst_ext: str) -> ConversionSettings:
+    """Turn "fit into N MB" into concrete bitrates (returns a modified copy)."""
+    size = settings.target_size_mb
+    kind = target_kind(dst_ext)
+    if not size or size <= 0 or not duration_s or kind not in ("video", "audio"):
+        return settings
+    total_kbps = size * 8 * 1024 * 1024 / 1000 / duration_s * 0.96  # ~4% container overhead
+    s = dataclasses.replace(settings)
+    if kind == "audio":
+        s.audio_bitrate_kbps = int(max(32, min(320, total_kbps)))
+        return s
+    audio = 0 if s.video_mute else (s.audio_bitrate_kbps or 128)
+    if not s.video_mute and total_kbps - audio < 200:
+        audio = 64  # tiny budget: give the picture what's left
+    s.audio_bitrate_kbps = audio or None
+    s.video_bitrate_mode = "cbr"
+    s.video_bitrate_kbps = int(max(50, total_kbps - audio))
+    return s
 
 
 def estimate_output_size_bytes(
@@ -1198,7 +1393,7 @@ def estimate_output_size_bytes(
     src = Path(src)
     dst_ext = dst_ext.lower().lstrip(".")
     src_kind = media_kind(src.suffix)
-    dst_kind = media_kind(dst_ext)
+    dst_kind = target_kind(dst_ext)
     if src_kind is None or dst_kind is None:
         return None
 
@@ -1224,8 +1419,10 @@ def estimate_output_size_bytes(
     if duration <= 0:
         return None
 
-    if src_kind == "video" and dst_ext == "gif":
+    if src_kind == "video" and dst_ext in ("gif", *SUBTITLE_FORMATS):
         return None
+    if settings.target_size_mb and dst_kind in ("audio", "video"):
+        return int(settings.target_size_mb * 1024 * 1024)
 
     if dst_kind == "audio":
         if dst_ext in ("flac", "wav", "aiff"):
@@ -1284,6 +1481,268 @@ def batch_convert(
         if on_done:
             on_done(src, res)
     return results
+
+
+def render_sample(
+    src: Path,
+    target_ext: str,
+    settings: ConversionSettings,
+    *,
+    seconds: float = 5.0,
+    duration_s: Optional[float] = None,
+    out_dir: Optional[Path] = None,
+    on_log: Optional[Callable[[str], None]] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
+) -> tuple[Path, Optional[int]]:
+    """Encode a short piece from the middle to judge quality and size.
+
+    Returns the sample path and the projected size of the full conversion.
+    """
+    src = Path(src)
+    duration_s = duration_s if duration_s is not None else probe_duration(src)
+    full = effective_duration(duration_s, settings) or 0
+    start0 = settings.trim_start_s or 0
+    if full and full > seconds:
+        start = start0 + (full - seconds) / 2
+    else:
+        start = start0
+    s = dataclasses.replace(settings, trim_start_s=start,
+                            trim_end_s=start + min(seconds, full or seconds),
+                            target_size_mb=None)
+    if settings.target_size_mb and full:
+        s = apply_target_size(dataclasses.replace(settings, trim_start_s=None, trim_end_s=None),
+                              full, target_ext)
+        s.trim_start_s, s.trim_end_s, s.target_size_mb = start, start + min(seconds, full), None
+    folder = Path(out_dir or tempfile.gettempdir()) / "converter_samples"
+    folder.mkdir(parents=True, exist_ok=True)
+    dst = folder / f"{src.stem}_sample.{target_ext.lstrip('.')}"
+    if dst.exists():
+        dst.unlink()
+    convert(src, dst, settings=s, duration_s=duration_s, on_log=on_log, on_proc=on_proc,
+            is_cancelled=is_cancelled)
+    sample_len = min(seconds, full or seconds)
+    projected = None
+    if full and sample_len:
+        projected = int(dst.stat().st_size * full / sample_len)
+    return dst, projected
+
+
+# ---------------------------------------------------------------------------
+# Concatenation — several audio or video files into one
+# ---------------------------------------------------------------------------
+
+def probe_video_size(path: Path) -> Optional[tuple[int, int]]:
+    if not ffprobe_available():
+        return None
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0:s=x", str(path)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, creationflags=_creationflags(),
+        )
+        w, h = (int(x) for x in (proc.stdout or "").strip().split("x")[:2])
+        return w, h
+    except (subprocess.TimeoutExpired, OSError, ValueError):
+        return None
+
+
+def _has_audio(path: Path) -> bool:
+    return any(st.kind == "audio" for st in probe_streams(path))
+
+
+def concat_files(
+    srcs: list[Path],
+    dst: Path,
+    settings: Optional[ConversionSettings] = None,
+    *,
+    durations: Optional[list[float]] = None,
+    on_log: Optional[Callable[[str], None]] = None,
+    on_progress: Optional[Callable[[float], None]] = None,
+    on_proc: Optional[Callable[[subprocess.Popen], None]] = None,
+    is_cancelled: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Join audio (→ audio) or video (→ video / audio) files end to end.
+
+    Inputs may differ in resolution, fps, sample rate: every part is
+    normalised (scaled + letterboxed to the first video's frame) first.
+    """
+    settings = settings or default_settings()
+    srcs = [Path(p) for p in srcs]
+    if len(srcs) < 2:
+        raise ConversionError("Для склейки нужно хотя бы два файла.")
+    dst = Path(dst)
+    target = dst.suffix.lower().lstrip(".")
+    kinds = {media_kind(p.suffix) for p in srcs}
+    if kinds - {"audio", "video"}:
+        raise ConversionError("Склеивать можно только аудио и видео.")
+    out_kind = target_kind(target)
+    video_out = out_kind == "video"
+    if video_out and kinds != {"video"}:
+        raise ConversionError("Видео можно склеить только из видео.")
+    if durations is None:
+        durations = [probe_duration(p) or 0 for p in srcs]
+    total = sum(durations) or None
+    settings = apply_target_size(settings, total, target)
+
+    args = ["ffmpeg", "-y"]
+    for p in srcs:
+        args += ["-i", str(p)]
+    chains: list[str] = []
+    labels: list[str] = []
+    want_audio = not (video_out and settings.video_mute)
+    n_inputs = len(srcs)
+
+    if video_out:
+        w, h = probe_video_size(srcs[0]) or (1280, 720)
+        if settings.video_height:
+            w, h = int(round(w * settings.video_height / h / 2)) * 2, settings.video_height
+        fps = settings.video_fps or 30
+    for i, p in enumerate(srcs):
+        if video_out:
+            chains.append(
+                f"[{i}:v:0]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps},format=yuv420p[v{i}]")
+            labels.append(f"[v{i}]")
+        if want_audio:
+            if _has_audio(p):
+                chains.append(f"[{i}:a:0]aresample=48000,aformat=channel_layouts=stereo[a{i}]")
+            else:  # silent part: synthesise silence of the same length
+                args += ["-f", "lavfi", "-t", f"{durations[i] or 1:.3f}",
+                         "-i", "anullsrc=r=48000:cl=stereo"]
+                chains.append(f"[{n_inputs}:a]anull[a{i}]")
+                n_inputs += 1
+            labels.append(f"[a{i}]")
+
+    v, a = int(video_out), int(want_audio)
+    graph = ";".join(chains) + ";" + "".join(labels) + f"concat=n={len(srcs)}:v={v}:a={a}"
+    outs = []
+    if video_out:
+        graph += "[vc]"
+        outs.append("vc")
+    if want_audio:
+        graph += "[ac]"
+        outs.append("ac")
+    post_v = _orient_filters(settings)
+    if video_out and post_v:
+        graph += f";[vc]{','.join(post_v)}[vo]"
+        outs[0] = "vo"
+    if want_audio and settings.audio_normalize:
+        graph += f";[ac]{LOUDNORM_FILTER}[ao]"
+        outs[-1] = "ao"
+    args += ["-filter_complex", graph]
+    for o in outs:
+        args += ["-map", f"[{o}]"]
+
+    if video_out:
+        vcodec = settings.video_codec or DEFAULT_VIDEO_CODEC_FOR_CONTAINER.get(target, "h264")
+        acodec = settings.audio_codec_for_video or _DEFAULT_AUDIO_FOR_CONTAINER.get(target, "aac")
+        if acodec == "copy":
+            acodec = _DEFAULT_AUDIO_FOR_CONTAINER.get(target, "aac")
+        problem = check_video_compat(target, vcodec, acodec)
+        if problem:
+            raise ConversionError(problem)
+        args += _video_codec_args(vcodec, settings)
+        if want_audio:
+            args += _audio_codec_args(acodec, settings)
+        if target in ("mp4", "m4v", "mov"):
+            args += ["-movflags", "+faststart"]
+    elif target == "wav":
+        args += ["-c:a", "pcm_s16le", *_audio_format_args(settings)]
+    elif target == "aiff":
+        args += ["-c:a", "pcm_s16be", *_audio_format_args(settings)]
+    else:
+        args += _audio_codec_args(_AUDIO_TARGET_CODEC.get(target, "aac"), settings)
+    args.append(str(dst))
+
+    existed = dst.exists()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _run_ffmpeg(args, on_log=on_log, on_progress=on_progress, duration_s=total,
+                    on_proc=on_proc, low_priority=settings.low_priority,
+                    is_cancelled=is_cancelled)
+    except BaseException:
+        if not existed and dst.exists():
+            try:
+                dst.unlink()
+            except OSError:
+                pass
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Output names and human-friendly errors
+# ---------------------------------------------------------------------------
+
+NAME_TOKENS = {
+    "{name}": "имя исходного файла",
+    "{ext}": "расширение исходного файла",
+    "{format}": "новый формат",
+    "{n}": "номер в очереди (001)",
+    "{date}": "дата (2026-11-18)",
+    "{time}": "время (14-05)",
+    "{height}": "высота видео (720p)",
+}
+_BAD_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def render_name(template: str, src: Path, target: str, index: int = 1,
+                settings: Optional[ConversionSettings] = None,
+                now: Optional[datetime.datetime] = None) -> str:
+    """Build an output file stem from a template like "{name}_{height}"."""
+    now = now or datetime.datetime.now()
+    height = f"{settings.video_height}p" if settings and settings.video_height else ""
+    values = {
+        "{name}": src.stem,
+        "{ext}": src.suffix.lstrip(".").lower(),
+        "{format}": target.lower(),
+        "{n}": f"{index:03d}",
+        "{date}": now.strftime("%Y-%m-%d"),
+        "{time}": now.strftime("%H-%M"),
+        "{height}": height,
+    }
+    out = template or "{name}"
+    for k, v in values.items():
+        out = out.replace(k, v)
+    out = _BAD_NAME_CHARS.sub("_", out).strip(" ._-")
+    out = re.sub(r"([_\- ])\1+", r"\1", out)  # "a__b" left by an empty token → "a_b"
+    return out or src.stem
+
+
+_ERROR_HINTS: list[tuple[str, str]] = [
+    (r"No space left on device", "На диске закончилось место."),
+    (r"Permission denied|Access is denied", "Нет доступа к файлу или папке — проверьте права или "
+                                            "закройте файл в других программах."),
+    (r"No such file or directory", "Файл не найден — возможно, его переместили или удалили."),
+    (r"Invalid data found when processing input|moov atom not found|"
+     r"could not find codec parameters", "Файл повреждён или недокачан."),
+    (r"Unknown encoder|Encoder not found|Unrecognized option", "В вашем ffmpeg нет нужного "
+                                                               "кодека — обновите ffmpeg."),
+    (r"Cannot load nvcuda|No NVENC capable devices|OpenEncodeSessionEx failed|"
+     r"Error initializing output stream.*(nvenc|qsv|amf)|Failed to create.*(qsv|amf)",
+     "Аппаратное кодирование недоступно на этом компьютере — переключитесь на «Процессор»."),
+    (r"matches no streams|Stream map .* matches no streams|does not contain any stream",
+     "В файле нет нужной дорожки (например, звука или видео)."),
+    (r"Could not open encoder before EOF|Nothing was written into output file",
+     "После обрезки ничего не осталось — проверьте время начала и конца."),
+    (r"Subtitle encoding currently only possible from text to text|"
+     r"Unable to open .*\.(srt|ass|vtt)|Error initializing filter 'subtitles'",
+     "Не получилось прочитать субтитры."),
+    (r"codec not currently supported in container|Could not find tag for codec",
+     "Этот кодек нельзя положить в выбранный контейнер."),
+    (r"cannot identify image file|cannot write mode|encoder .* not available",
+     "Pillow не смог прочитать или записать эту картинку."),
+]
+
+
+def humanize_error(message: str) -> str:
+    """Short Russian explanation of a conversion error (first line for the UI)."""
+    for pattern, hint in _ERROR_HINTS:
+        if re.search(pattern, message, re.IGNORECASE):
+            return hint
+    first = message.strip().splitlines()[0] if message.strip() else "Неизвестная ошибка"
+    return first[:200]
 
 
 # ---------------------------------------------------------------------------
