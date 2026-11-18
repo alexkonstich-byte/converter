@@ -52,13 +52,29 @@ jobs:
           Copy-Item "$bin\ffmpeg.exe", "$bin\ffprobe.exe" build\windows\
           $lic = Get-ChildItem ffmpeg-dist -Recurse -Filter LICENSE.txt | Select-Object -First 1
           if ($lic) { Copy-Item $lic.FullName build\windows\FFMPEG-LICENSE.txt }
-      - name: Zip
+      - name: Portable zip
         shell: pwsh
-        run: Compress-Archive -Path build\windows\* -DestinationPath Converter-windows-x64.zip
+        run: Compress-Archive -Path build\windows\* -DestinationPath "Converter-${{ env.VERSION }}-windows-x64-portable.zip"
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          & $iscc "/DAppVersion=${{ env.VERSION }}" installer\converter.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Move-Item "dist\Converter-${{ env.VERSION }}-windows-x64-setup.exe" .
       - uses: actions/upload-artifact@v4
         with:
           name: Converter-windows-x64
-          path: Converter-windows-x64.zip
+          path: |
+            Converter-${{ env.VERSION }}-windows-x64-portable.zip
+            Converter-${{ env.VERSION }}-windows-x64-setup.exe
+      - name: Remove old-style asset names from this release
+        if: env.PUBLISH == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete-asset "v${{ env.VERSION }}" Converter-windows-x64.zip -y -R "$GITHUB_REPOSITORY" || true
       - name: Publish release
         if: env.PUBLISH == 'true'
         uses: softprops/action-gh-release@v2
@@ -66,7 +82,9 @@ jobs:
           tag_name: v${{ env.VERSION }}
           name: Converter ${{ env.VERSION }}
           target_commitish: ${{ github.sha }}
-          files: Converter-windows-x64.zip
+          files: |
+            Converter-${{ env.VERSION }}-windows-x64-setup.exe
+            Converter-${{ env.VERSION }}-windows-x64-portable.zip
           body_path: .github/release-notes.md
 
   macos:

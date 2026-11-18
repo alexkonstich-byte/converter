@@ -10,7 +10,9 @@ A desktop app for converting **images, audio and video**, written in Python. The
 
 Grab the latest build from [**Releases**](https://github.com/alexkonstich-byte/converter/releases/latest):
 
-- **Windows 10/11:** `Converter-windows-x64.zip`. Unzip and run `Converter.exe`. ffmpeg is already included.
+- **Windows 10/11, installer:** `Converter-<version>-windows-x64-setup.exe`. Installs like a normal app (Start menu, uninstaller), no admin rights needed.
+- **Windows 10/11, portable:** `Converter-<version>-windows-x64-portable.zip`. Unzip anywhere and run `Converter.exe`.
+- Both Windows builds already include ffmpeg.
 - **macOS:** `Converter-macos.zip`. Install ffmpeg with `brew install ffmpeg`.
 - **Linux:** `Converter-linux-x64.tar.gz`. Install `ffmpeg`, `libmpv2` and `zenity`.
 
@@ -85,7 +87,7 @@ flet build windows   # or macos / linux
 
 The result goes to `build/<platform>` and runs without Python. Drag & drop from the file manager only works in the built app.
 
-Releases are built by GitHub Actions. Push a tag like `v2.0.0` and the **Release** workflow builds Windows, macOS and Linux packages and attaches them to a GitHub Release. The Windows package bundles ffmpeg.
+Releases are built by GitHub Actions. Push a tag like `v2.0.0` and the **Release** workflow builds Windows, macOS and Linux packages and attaches them to a GitHub Release. The Windows packages (installer built with Inno Setup, see `installer/converter.iss`, and a portable zip) bundle ffmpeg.
 
 ## Project layout
 

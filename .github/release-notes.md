@@ -2,7 +2,8 @@
 
 | System | File | How to run |
 |---|---|---|
-| **Windows 10/11** | `Converter-windows-x64.zip` | Unzip anywhere and run `Converter.exe`. ffmpeg is included. |
+| **Windows 10/11 — installer** | `Converter-…-windows-x64-setup.exe` | Run it. Installs per user (no admin needed) with Start menu entry and uninstaller. ffmpeg is included. |
+| **Windows 10/11 — portable** | `Converter-…-windows-x64-portable.zip` | Unzip anywhere (even a USB stick) and run `Converter.exe`. ffmpeg is included. |
 | macOS | `Converter-macos.zip` | Unzip, move `Converter.app` to Applications. Install ffmpeg: `brew install ffmpeg`. On first launch right-click → Open (the app is not notarized). |
 | Linux x64 | `Converter-linux-x64.tar.gz` | Extract and run `linux/Converter`. Needs `ffmpeg`, `libmpv2` and `zenity` from your package manager. |
 

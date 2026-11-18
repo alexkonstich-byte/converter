@@ -6,7 +6,7 @@
 
 ## Скачать
 
-Готовые сборки лежат в [**Releases**](https://github.com/alexkonstich-byte/converter/releases/latest). Для Windows скачайте `Converter-windows-x64.zip`, распакуйте и запустите `Converter.exe`; ffmpeg уже внутри. Сборки не подписаны, поэтому Windows может показать предупреждение SmartScreen: нажмите «Подробнее» → «Выполнить в любом случае».
+Готовые сборки лежат в [**Releases**](https://github.com/alexkonstich-byte/converter/releases/latest). Для Windows есть два варианта: установщик `Converter-<версия>-windows-x64-setup.exe` (ставится как обычная программа, с ярлыком в «Пуске» и удалением, права администратора не нужны) и portable-архив `Converter-<версия>-windows-x64-portable.zip` (распакуйте куда угодно и запустите `Converter.exe`). В обоих уже есть ffmpeg. Сборки не подписаны, поэтому Windows может показать предупреждение SmartScreen: нажмите «Подробнее» → «Выполнить в любом случае».
 
 ## Возможности
 

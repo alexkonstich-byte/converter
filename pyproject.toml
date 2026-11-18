@@ -30,7 +30,7 @@ copyright = "MIT"
 [tool.flet.app]
 path = "."
 module = "app"
-exclude = ["tests", ".github", "build", "dist"]
+exclude = ["tests", ".github", "build", "dist", "installer"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
