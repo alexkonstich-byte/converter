@@ -1,10 +1,13 @@
-# flet 0.28+ is a major API rewrite (async file picker, no on_result callback).
-# Pinning to the last 0.27.x release keeps the current callback-based code working.
-flet>=0.25.0,<0.28
-Pillow>=10.0.0
+# UI: Flet 1.x — current Flutter Material 3 widgets (M3 sliders, progress
+# indicators, segmented buttons, dynamic color from a seed).
+flet[all]>=1.1.2,<2
+# Inline audio / video preview (video needs libmpv on Linux; without it the
+# app falls back to a thumbnail).
+flet-audio>=1.1.2,<2
+flet-video>=1.1.2,<2
 
-# AVIF support — registers AVIF read/write into Pillow.
-pillow-avif-plugin>=1.4.0
+# Pillow 11.2+ reads and writes AVIF natively.
+Pillow>=11.2
 
-# Used to suspend/resume the live ffmpeg subprocess (Pause button).
+# Suspend/resume the running ffmpeg (Pause button).
 psutil>=5.9.0

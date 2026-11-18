@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -218,14 +219,22 @@ def _run_ffmpeg(
         # aggressively, so the rest of the desktop stays smooth.
         flags |= 0x00004000
     preexec = None
-    if low_priority and os.name != "nt":
-        # POSIX: fork the child with nice(10) so it runs at lower priority.
-        def _renice():
-            try:
-                os.nice(10)
-            except Exception:
-                pass
-        preexec = _renice
+    if os.name != "nt":
+        def _child_setup(nice=low_priority):
+            if nice:
+                # POSIX: run the child with nice(10) so it has lower priority.
+                try:
+                    os.nice(10)
+                except Exception:
+                    pass
+            if sys.platform.startswith("linux"):
+                # Kill ffmpeg if our process dies abruptly (no orphaned encodes).
+                try:
+                    import ctypes
+                    ctypes.CDLL("libc.so.6", use_errno=True).prctl(1, 9)  # PR_SET_PDEATHSIG, SIGKILL
+                except Exception:
+                    pass
+        preexec = _child_setup
 
     proc = subprocess.Popen(
         args,
