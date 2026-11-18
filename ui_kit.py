@@ -28,6 +28,9 @@ SHAPE_MEDIUM = 12
 SHAPE_LARGE = 16
 SHAPE_EXTRA_LARGE = 28
 
+# Panes are slightly translucent so the M3 Expressive backdrop shapes peek through.
+PANE_BG = ft.Colors.with_opacity(0.86, ft.Colors.SURFACE_CONTAINER_LOW)
+
 KIND_ICON = {
     "image": ft.Icons.IMAGE_OUTLINED,
     "audio": ft.Icons.MUSIC_NOTE_OUTLINED,
@@ -66,7 +69,8 @@ def pane(*controls: ft.Control, expand: bool | int = False, padding: int = 20,
         expand=expand,
         padding=padding,
         border_radius=SHAPE_EXTRA_LARGE,
-        bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+        bgcolor=PANE_BG,
+        animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
         content=ft.Column(list(controls), spacing=spacing, expand=expand, scroll=scroll),
     )
 
@@ -93,6 +97,7 @@ def section(title: str, icon: ft.IconData, *controls: ft.Control,
         padding=16,
         border_radius=SHAPE_LARGE,
         bgcolor=ft.Colors.SURFACE_CONTAINER_HIGH,
+        animate_size=ft.Animation(280, ft.AnimationCurve.EASE_OUT_CUBIC),
         content=ft.Column(
             spacing=12,
             controls=[ft.Row(header, spacing=12,

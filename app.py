@@ -55,10 +55,12 @@ from queue_logic import (
     settings_to_dict,
 )
 from settings_panel import SettingsPanel
+from shapes import Backdrop, ExpressiveLoader, ShapeBadge, expressive_button_style, make_spinner
 from ui_kit import (
     DEFAULT_SEED,
     KIND_ICON,
     KIND_LABEL,
+    PANE_BG,
     SEED_COLORS,
     SHAPE_EXTRA_LARGE,
     SHAPE_LARGE,
@@ -152,6 +154,7 @@ class ConverterApp:
         self.url_launcher = ft.UrlLauncher()
 
         self._setup_page()
+        self.spinner = make_spinner(page)  # drives every slowly rotating M3 shape
         self.panel = SettingsPanel(self)
         self.preview = PreviewPane(self)
         self._build()
@@ -289,14 +292,21 @@ class ConverterApp:
                 on_entered=lambda _e: self._drop_highlight(True),
                 on_exited=lambda _e: self._drop_highlight(False),
             )
+        self.backdrop = Backdrop(self.spinner)
         self.page.add(
-            ft.SafeArea(
+            ft.Stack(
                 expand=True,
-                content=ft.Container(
-                    expand=True,
-                    padding=ft.Padding.only(left=16, right=16, bottom=16),
-                    content=content,
-                ),
+                controls=[
+                    self.backdrop.control,
+                    ft.SafeArea(
+                        expand=True,
+                        content=ft.Container(
+                            expand=True,
+                            padding=ft.Padding.only(left=16, right=16, bottom=16),
+                            content=content,
+                        ),
+                    ),
+                ],
             )
         )
         self._refresh_all()
@@ -335,15 +345,11 @@ class ConverterApp:
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=12,
                 controls=[
-                    ft.Container(
-                        width=48, height=48, border_radius=SHAPE_LARGE,
-                        bgcolor=ft.Colors.PRIMARY_CONTAINER,
-                        alignment=ft.Alignment.CENTER,
-                        content=ft.Icon(ft.Icons.AUTORENEW_ROUNDED, size=28,
-                                        color=ft.Colors.ON_PRIMARY_CONTAINER),
-                    ),
+                    ShapeBadge("cookie9", 52, ft.Icons.AUTORENEW_ROUNDED,
+                               spinner=self.spinner, speed=0.5, icon_size=26),
                     ft.Column(spacing=0, expand=True, controls=[
-                        ft.Text("Конвертер", theme_style=ft.TextThemeStyle.TITLE_LARGE),
+                        ft.Text("Конвертер", theme_style=ft.TextThemeStyle.TITLE_LARGE,
+                                weight=ft.FontWeight.W_600),
                         self.app_title_sub,
                     ]),
                     self.palette_menu,
@@ -651,9 +657,11 @@ class ConverterApp:
         )
         self.add_btn = ft.FilledTonalButton("Файлы", icon=ft.Icons.ADD_ROUNDED,
                                             tooltip="Добавить файлы (Ctrl+O)",
+                                            style=expressive_button_style(20, 8),
                                             on_click=self._pick_files)
         self.add_dir_btn = ft.OutlinedButton("Папку", icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
                                              tooltip="Добавить папку целиком (Ctrl+Shift+O)",
+                                             style=expressive_button_style(20, 8),
                                              on_click=self._pick_folder)
         self.clear_btn = ft.TextButton("Очистить", icon=ft.Icons.CLEAR_ALL_ROUNDED,
                                        on_click=self._clear_files)
@@ -673,22 +681,19 @@ class ConverterApp:
                 alignment=ft.MainAxisAlignment.CENTER,
                 spacing=12,
                 controls=[
-                    ft.Container(
-                        width=72, height=72, border_radius=36,
-                        bgcolor=ft.Colors.PRIMARY_CONTAINER,
-                        alignment=ft.Alignment.CENTER,
-                        content=ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, size=36,
-                                        color=ft.Colors.ON_PRIMARY_CONTAINER),
-                    ),
+                    ShapeBadge("clover4", 104, ft.Icons.UPLOAD_FILE_ROUNDED,
+                               spinner=self.spinner, speed=0.3, icon_size=44),
                     ft.Text("Очередь пуста", theme_style=ft.TextThemeStyle.TITLE_MEDIUM),
                     label(drop_hint, style=ft.TextThemeStyle.BODY_MEDIUM),
                     ft.Row(
                         alignment=ft.MainAxisAlignment.CENTER,
                         controls=[
-                            ft.FilledButton("Выбрать файлы", icon=ft.Icons.ADD_ROUNDED,
+                            ft.FilledButton("Выбрать файлы", icon=ft.Icons.ADD_ROUNDED, height=48,
+                                            style=expressive_button_style(24, 10),
                                             on_click=self._pick_files),
-                            ft.OutlinedButton("Добавить папку",
+                            ft.OutlinedButton("Добавить папку", height=48,
                                               icon=ft.Icons.CREATE_NEW_FOLDER_OUTLINED,
+                                              style=expressive_button_style(24, 10),
                                               on_click=self._pick_folder),
                         ],
                     ),
@@ -804,11 +809,30 @@ class ConverterApp:
                        + (f" и ещё {len(skipped) - 3}" if len(skipped) > 3 else ""), error=True)
         if not added:
             return
+        for item in added:
+            item.ui["fresh"] = True
         if self.selected is None:
             self._select(added[0], refresh=False)
         self.panel.show_out_dir(self.out_dir)
         self._refresh_all()
+        threading.Thread(target=self._slide_in, args=(added,), daemon=True).start()
         threading.Thread(target=self._probe_items, args=(added,), daemon=True).start()
+
+    def _slide_in(self, items: list[FileItem]) -> None:
+        """Staggered entrance of freshly added tiles."""
+        time.sleep(0.05)
+        for item in items:
+            tile = item.ui.get("tile")
+            item.ui["fresh"] = False
+            if tile is None:
+                continue
+            tile.offset = ft.Offset(0, 0)
+            tile.opacity = 1
+            try:
+                tile.update()
+            except Exception:
+                pass
+            time.sleep(0.04)
 
     def _on_dropped(self, e) -> None:
         self._drop_highlight(False)
@@ -817,8 +841,7 @@ class ConverterApp:
             self.add_paths(paths)
 
     def _drop_highlight(self, on: bool) -> None:
-        self.queue_pane.bgcolor = (ft.Colors.PRIMARY_CONTAINER if on
-                                   else ft.Colors.SURFACE_CONTAINER_LOW)
+        self.queue_pane.bgcolor = ft.Colors.PRIMARY_CONTAINER if on else PANE_BG
         self.queue_pane.update()
 
     def _probe_items(self, items: list[FileItem]) -> None:
@@ -904,10 +927,16 @@ class ConverterApp:
             mouse_cursor=ft.MouseCursor.GRAB,
             visible=not self.running and len(self.files) > 1,
         )
+        fresh = item.ui.get("fresh", False)
         tile = ft.Container(
             padding=ft.Padding.only(left=4, right=12, top=10, bottom=10),
             border_radius=SHAPE_LARGE,
             ink=True,
+            animate=ft.Animation(260, ft.AnimationCurve.EASE_OUT),
+            offset=ft.Offset(0.15, 0) if fresh else ft.Offset(0, 0),
+            opacity=0 if fresh else 1,
+            animate_offset=ft.Animation(420, ft.AnimationCurve.EASE_OUT_BACK),
+            animate_opacity=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
             tooltip=item.message[:600] if item.status == "error" else None,
             on_click=lambda _e, it=item: self._select(it),
             content=ft.Row(
@@ -935,7 +964,7 @@ class ConverterApp:
                 ],
             ),
         )
-        item.ui = {"tile": tile, "subtitle": subtitle, "bar": bar, "pct": pct}
+        item.ui = {"tile": tile, "subtitle": subtitle, "bar": bar, "pct": pct, "fresh": fresh}
         self._restyle_tile(item)
         self._update_tile_text(item)
         return tile
@@ -1111,13 +1140,21 @@ class ConverterApp:
             icon=ft.Icons.PLAY_ARROW_ROUNDED,
             height=56,
             tooltip="Ctrl+Enter",
-            style=ft.ButtonStyle(
+            style=expressive_button_style(
+                28, 12,
                 padding=ft.Padding.symmetric(horizontal=28),
-                shape=ft.RoundedRectangleBorder(radius=SHAPE_LARGE),
-                text_style=ft.TextStyle(size=16, weight=ft.FontWeight.W_500),
+                text_style=ft.TextStyle(size=16, weight=ft.FontWeight.W_600),
             ),
             on_click=lambda _e: self.start(),
         )
+        self.run_loader = ExpressiveLoader(44)
+        # "Done" burst: springs in from zero when a batch finishes.
+        self.done_badge = ShapeBadge("burst", 44, ft.Icons.CHECK_ROUNDED,
+                                     color=ft.Colors.PRIMARY, icon_color=ft.Colors.ON_PRIMARY,
+                                     spinner=self.spinner, speed=0.4, icon_size=24)
+        self.done_badge.visible = False
+        self.done_badge.scale = ft.Scale(0)
+        self.done_badge.animate_scale = ft.Animation(700, ft.AnimationCurve.ELASTIC_OUT)
         return ft.Container(
             padding=ft.Padding.symmetric(horizontal=20, vertical=14),
             border_radius=SHAPE_EXTRA_LARGE,
@@ -1126,6 +1163,8 @@ class ConverterApp:
                 spacing=8,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 controls=[
+                    self.run_loader,
+                    self.done_badge,
                     ft.Column(expand=True, spacing=6,
                               controls=[self.status_text, self.eta_text, self.progress]),
                     self.retry_btn,
@@ -1185,6 +1224,9 @@ class ConverterApp:
         self._cancel.clear()
         self._paused = False
         self.preview.stop()
+        self.done_badge.visible = False
+        self.done_badge.scale = ft.Scale(0)
+        self.run_loader.start()
         for item in batch:
             item.status, item.message, item.dst = "pending", "", None
             item.progress, item.checksum = 0.0, None
@@ -1440,6 +1482,7 @@ class ConverterApp:
         cancelled = self._cancel.is_set()
         self.running = False
         self._paused = False
+        self.run_loader.stop()
         self.cancel_btn.disabled = False
         self.pause_btn.icon = ft.Icons.PAUSE_ROUNDED
         if last_dst is not None:
@@ -1467,6 +1510,8 @@ class ConverterApp:
         self._refresh_sample_btn()
         self.page.update()
 
+        if ok and not cancelled:
+            self._celebrate(error=failed > 0)
         if cancelled:
             self.toast("Конвертация отменена.")
             return
@@ -1483,6 +1528,23 @@ class ConverterApp:
             os_utils.beep()
             if not self._window_focused:
                 os_utils.notify("Конвертер", msg)
+
+    def _celebrate(self, error: bool = False) -> None:
+        """M3 Expressive "done" moment: a burst shape springs in."""
+        b = self.done_badge
+        b.icon.icon = ft.Icons.PRIORITY_HIGH_ROUNDED if error else ft.Icons.CHECK_ROUNDED
+        b.visible = True
+        b.scale = ft.Scale(0)
+        self.page.update()
+
+        def pop():
+            time.sleep(0.05)
+            b.scale = ft.Scale(1)
+            try:
+                b.update()
+            except Exception:
+                pass
+        threading.Thread(target=pop, daemon=True).start()
 
     def _set_proc(self, key: int, proc: subprocess.Popen) -> None:
         with self._lock:
@@ -1690,6 +1752,8 @@ class ConverterApp:
     def shutdown(self) -> None:
         """Kill running ffmpeg processes so nothing is left behind after the window closes."""
         self._cancel.set()
+        self.spinner.stop()
+        self.run_loader.stop()
         with self._lock:
             procs = list(self._procs.values())
         for proc in procs:

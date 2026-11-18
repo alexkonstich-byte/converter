@@ -17,7 +17,8 @@ import flet as ft
 from PIL import Image
 
 from converter import extract_video_thumbnail, humanize_error
-from ui_kit import KIND_LABEL, SHAPE_LARGE, SHAPE_MEDIUM, fmt_time, human_size, label
+from shapes import ExpressiveLoader, ShapeBadge
+from ui_kit import KIND_LABEL, PANE_BG, SHAPE_LARGE, SHAPE_MEDIUM, fmt_time, human_size, label
 
 try:
     import flet_audio as fta
@@ -92,14 +93,17 @@ class PreviewPane:
                 alignment=ft.MainAxisAlignment.CENTER,
                 spacing=8,
                 controls=[
-                    ft.Icon(ft.Icons.PHOTO_LIBRARY_OUTLINED, size=40, color=ft.Colors.OUTLINE),
+                    ShapeBadge("soft_burst", 76, ft.Icons.PHOTO_LIBRARY_OUTLINED,
+                               color=ft.Colors.SECONDARY_CONTAINER,
+                               icon_color=ft.Colors.ON_SECONDARY_CONTAINER,
+                               spinner=app.spinner, speed=0.2),
                     label("Здесь появится картинка, видео или плеер"),
                 ],
             ),
         )
+        self.loader = ExpressiveLoader(56)
         self.loading = ft.Container(
-            visible=False, alignment=ft.Alignment.CENTER,
-            content=ft.ProgressRing(year_2023=False),
+            visible=False, alignment=ft.Alignment.CENTER, content=self.loader,
         )
         self.image = ft.Image(src=b"", fit=ft.BoxFit.CONTAIN, visible=False,
                               border_radius=SHAPE_MEDIUM, gapless_playback=True)
@@ -124,13 +128,10 @@ class PreviewPane:
                 alignment=ft.MainAxisAlignment.CENTER,
                 spacing=16,
                 controls=[
-                    ft.Container(
-                        width=88, height=88, border_radius=SHAPE_LARGE * 2,
-                        bgcolor=ft.Colors.TERTIARY_CONTAINER,
-                        alignment=ft.Alignment.CENTER,
-                        content=ft.Icon(ft.Icons.MUSIC_NOTE_ROUNDED, size=44,
-                                        color=ft.Colors.ON_TERTIARY_CONTAINER),
-                    ),
+                    ShapeBadge("cookie12", 96, ft.Icons.MUSIC_NOTE_ROUNDED,
+                               color=ft.Colors.TERTIARY_CONTAINER,
+                               icon_color=ft.Colors.ON_TERTIARY_CONTAINER,
+                               spinner=app.spinner, speed=0.35),
                     ft.Row([self.play_btn, self.seek, self.pos_text],
                            vertical_alignment=ft.CrossAxisAlignment.CENTER),
                 ],
@@ -158,7 +159,7 @@ class PreviewPane:
         self.control = ft.Container(
             padding=20,
             border_radius=28,
-            bgcolor=ft.Colors.SURFACE_CONTAINER_LOW,
+            bgcolor=PANE_BG,
             content=ft.Column(
                 spacing=12,
                 controls=[
@@ -198,6 +199,7 @@ class PreviewPane:
         self.item = item
         for c in (self.image, self.video_slot, self.audio_panel, self.loading):
             c.visible = False
+        self.loader.stop()
         self.track_dropdown.visible = False
         self.sub_dropdown.visible = False
         self.open_btn.visible = False
@@ -270,6 +272,7 @@ class PreviewPane:
     def _load_async(self, producer, consumer) -> None:
         token = self._token
         self.loading.visible = True
+        self.loader.start()
 
         def work():
             try:
@@ -280,6 +283,7 @@ class PreviewPane:
             if token != self._token:
                 return  # user already picked another file
             self.loading.visible = False
+            self.loader.stop()
             if err is not None:
                 self.placeholder.visible = True
                 self.placeholder.content.controls[1].value = (
